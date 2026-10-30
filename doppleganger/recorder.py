@@ -1,0 +1,261 @@
+"""Records the loop with on-screen coaching, then trims and stitches it.
+
+Timeline of a recording (defaults):
+  countdown 3s
+  0-10s     HOLD STILL      (start pose; this is frame 0 of the loop)
+  10s-80s   move naturally
+  80s-90s   RETURN + HOLD STILL: first frame shown as a ghost overlay,
+            match meter tells you when you're back in the same pose/expression
+  -> best-matching frame in the final seconds becomes the loop's last frame,
+     plus a few motion-matched bridge frames back to frame 0.
+"""
+from __future__ import annotations
+
+import json
+import os
+import queue
+import threading
+import time
+from enum import Enum
+
+import cv2
+import numpy as np
+
+from . import guides
+from .config import Config
+from .stitch import bridge_frames, bridge_length, find_best_end
+
+
+class State(Enum):
+    IDLE = "idle"
+    COUNTDOWN = "countdown"
+    RECORDING = "recording"
+    PROCESSING = "processing"
+
+
+class _Writer:
+    """Writes frames on a background thread so recording never stalls the output."""
+
+    def __init__(self, path: str, fourcc: str, fps: int, size: tuple[int, int]):
+        self.vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*fourcc), fps, size)
+        if not self.vw.isOpened():
+            raise RuntimeError(f"Could not open video writer for {path}")
+        self.q: queue.Queue = queue.Queue(maxsize=240)
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.t.start()
+
+    def _run(self):
+        while True:
+            f = self.q.get()
+            if f is None:
+                break
+            self.vw.write(f)
+        self.vw.release()
+
+    def write(self, frame):
+        self.q.put(frame)
+
+    def close(self):
+        self.q.put(None)
+        self.t.join()
+
+
+class Recorder:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.state = State.IDLE
+        self.message = ""
+        self.result_path: str | None = None  # set when a new loop is ready
+        self._reset()
+
+    def _reset(self):
+        self.t0 = 0.0
+        self.rec_start = 0.0
+        self.smalls: list[np.ndarray] = []
+        self.first_frame: np.ndarray | None = None
+        self.first_small: np.ndarray | None = None
+        self.ref_box = None
+        self.live_box = None
+        self.motion = 0.0
+        self.match = 0.0
+        self._writer: _Writer | None = None
+        self._raw_path = ""
+        self._face_tick = 0
+
+    # ---------- control ----------
+    def start(self) -> None:
+        if self.state in (State.IDLE,):
+            self._reset()
+            self.state = State.COUNTDOWN
+            self.t0 = time.monotonic()
+            self.message = ""
+
+    def cancel(self) -> None:
+        if self.state in (State.COUNTDOWN, State.RECORDING):
+            if self._writer:
+                self._writer.close()
+            if self._raw_path and os.path.exists(self._raw_path):
+                os.remove(self._raw_path)
+            self.state = State.IDLE
+            self.message = "Recording cancelled."
+
+    def end_now(self) -> None:
+        """Finish early - only allowed once you're in the return zone."""
+        if self.state == State.RECORDING and self.in_return_zone():
+            self._finish()
+
+    # ---------- timing helpers ----------
+    @property
+    def elapsed(self) -> float:
+        return len(self.smalls) / self.cfg.fps
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.cfg.loop_seconds - self.elapsed)
+
+    def in_start_hold(self) -> bool:
+        return self.elapsed < self.cfg.hold_still_seconds
+
+    def in_end_hold(self) -> bool:
+        return self.remaining <= self.cfg.hold_still_seconds
+
+    def in_return_zone(self) -> bool:
+        return self.remaining <= self.cfg.return_prompt_seconds
+
+    # ---------- per-frame ----------
+    def update(self, frame: np.ndarray) -> None:
+        if self.state == State.COUNTDOWN:
+            if time.monotonic() - self.t0 >= self.cfg.countdown_seconds:
+                os.makedirs(self.cfg.loops_dir, exist_ok=True)
+                self._raw_path = os.path.join(self.cfg.loops_dir, "_recording_raw.avi")
+                self._writer = _Writer(self._raw_path, "MJPG", self.cfg.fps,
+                                       (frame.shape[1], frame.shape[0]))
+                self.state = State.RECORDING
+                self.rec_start = time.monotonic()
+        if self.state != State.RECORDING:
+            return
+
+        small = guides.small_gray(frame)
+        if not self.smalls:
+            self.first_frame = frame.copy()
+            self.first_small = small
+            self.ref_box = guides.detect_face(frame)
+        else:
+            self.motion = 0.7 * self.motion + 0.3 * min(1.0, guides.frame_diff(self.smalls[-1], small) / 6.0)
+        self._writer.write(frame)
+        self.smalls.append(small)
+
+        if self.in_return_zone():
+            self._face_tick += 1
+            if self._face_tick % 3 == 0:  # face detection every 3rd frame is plenty
+                self.live_box = guides.detect_face(frame)
+            self.match = guides.match_score(self.first_small, small, self.ref_box, self.live_box, frame.shape[1])
+
+        if self.remaining <= 0:
+            self._finish()
+
+    # ---------- finishing ----------
+    def _finish(self) -> None:
+        self._writer.close()
+        self.state = State.PROCESSING
+        self.message = "Stitching loop..."
+        threading.Thread(target=self._process, daemon=True).start()
+
+    def _process(self) -> None:
+        try:
+            path = self.process_raw(self._raw_path, self.smalls, self.cfg)
+            os.remove(self._raw_path)
+            self.result_path = path
+            self.message = f"New loop ready: {os.path.basename(path)}"
+        except Exception as e:  # noqa: BLE001 - show any failure in the UI
+            self.message = f"Stitching failed: {e}"
+        self.state = State.IDLE
+
+    @staticmethod
+    def process_raw(raw_path: str, smalls: list[np.ndarray], cfg: Config) -> str:
+        fps = cfg.fps
+        # Allow ~2s to get back into position, then search the rest of the return zone.
+        search_from = len(smalls) - int(max(1.0, cfg.return_prompt_seconds - 2.0) * fps)
+        end_idx, diff = find_best_end(smalls, search_from)
+
+        cap = cv2.VideoCapture(raw_path)
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out_path = os.path.join(cfg.loops_dir, time.strftime("loop_%Y%m%d_%H%M%S.mp4"))
+        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        first = last = None
+        for i in range(end_idx + 1):
+            ok, f = cap.read()
+            if not ok:
+                break
+            if i == 0:
+                first = f
+            last = f
+            out.write(f)
+        cap.release()
+        n = bridge_length(diff, cfg.max_bridge_frames)
+        if first is not None and last is not None:
+            for f in bridge_frames(last, first, n):
+                out.write(f)
+        out.release()
+
+        with open(out_path + ".json", "w", encoding="utf-8") as fh:
+            json.dump({"frames": end_idx + 1 + n, "fps": fps, "end_frame": end_idx,
+                       "seam_difference": round(diff, 2), "bridge_frames": n}, fh, indent=2)
+        return out_path
+
+    # ---------- preview overlay ----------
+    def draw(self, preview: np.ndarray, mirrored: bool) -> np.ndarray:
+        """Coaching overlay on the preview. Returns the (possibly onion-skinned) preview."""
+        cfg = self.cfg
+        h, w = preview.shape[:2]
+        if self.state == State.COUNTDOWN:
+            n = cfg.countdown_seconds - int(time.monotonic() - self.t0)
+            guides.banner(preview, f"Get in your start pose and HOLD STILL...  {n}", (0, 120, 200))
+            return preview
+        if self.state != State.RECORDING:
+            return preview
+
+        if self.in_return_zone() and self.first_frame is not None:
+            ghost = cv2.flip(self.first_frame, 1) if mirrored else self.first_frame
+            preview = guides.onion_skin(preview, ghost, 0.4)
+            ref = _mirror_box(self.ref_box, w) if mirrored else self.ref_box
+            live = _mirror_box(self.live_box, w) if mirrored else self.live_box
+            guides.draw_anchor(preview, ref, live)
+            guides.banner(preview, "Back to START pose & expression - HOLD STILL",
+                          (0, 110, 0) if self.match >= 0.75 else (0, 90, 200))
+            guides.draw_meter(preview, f"Match {int(self.match * 100)}%", self.match, h - 90)
+            # small inset of the first frame
+            iw = w // 5
+            inset = cv2.resize(ghost, (iw, iw * ghost.shape[0] // ghost.shape[1]))
+            top = int(h * 0.12) + 30  # below the banner
+            preview[top:top + inset.shape[0], w - iw - 10:w - 10] = inset
+            guides.put_text(preview, "first frame", (w - iw - 6, top + inset.shape[0] + 20), 0.5)
+        elif self.in_start_hold():
+            guides.banner(preview, f"HOLD STILL - start pose  ({cfg.hold_still_seconds - self.elapsed:0.0f}s)",
+                          (0, 120, 200))
+        elif self.in_end_hold():
+            guides.banner(preview, "HOLD STILL", (0, 120, 200))
+        else:
+            until = self.remaining - cfg.return_prompt_seconds
+            guides.put_text(preview, f"Recording - move naturally  (return cue in {until:0.0f}s)",
+                            (20, 40), 0.7)
+
+        if self.in_start_hold() or self.in_end_hold():
+            guides.draw_meter(preview, "Movement", self.motion, h - 55, good_high=False)
+            if self.motion > 0.6:
+                guides.put_text(preview, "Too much movement!", (20, h - 110), 0.8, (60, 60, 255))
+
+        # recording dot + time
+        cv2.circle(preview, (w - 30, h - 30), 10, (0, 0, 230), -1, cv2.LINE_AA)
+        guides.put_text(preview, f"{self.elapsed:0.0f}/{cfg.loop_seconds:0.0f}s", (w - 160, h - 22), 0.6)
+        if self.in_return_zone():
+            guides.put_text(preview, "E = end now", (w - 160, h - 50), 0.5)
+        return preview
+
+
+def _mirror_box(box, width):
+    if box is None:
+        return None
+    x, y, bw, bh = box
+    return width - x - bw, y, bw, bh

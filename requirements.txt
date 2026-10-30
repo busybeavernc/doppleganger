@@ -1,0 +1,4 @@
+opencv-python>=4.8,<5
+numpy>=1.24
+pyvirtualcam>=0.12
+pynput>=1.7

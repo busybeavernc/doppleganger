@@ -1,0 +1,48 @@
+"""User settings, loaded from / saved to config.json next to the app."""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict, dataclass, fields
+
+
+@dataclass
+class Config:
+    # Real webcam
+    camera_index: int = 0
+    width: int = 1280
+    height: int = 720
+    fps: int = 30
+
+    # Loop recording
+    loop_seconds: float = 90.0          # target loop length (60-180 recommended)
+    hold_still_seconds: float = 10.0    # "hold still" zone at the start AND end of the loop
+    return_prompt_seconds: float = 10.0 # show the first frame this long before the end
+    countdown_seconds: int = 3
+    max_bridge_frames: int = 8          # motion-matched frames inserted at the loop seam
+    loops_dir: str = "loops"
+
+    # Live <-> loop switching
+    crossfade_ms: int = 0               # 0 = hard cut (default)
+    restart_loop_on_cut: bool = True    # cut into the loop at its first frame
+    hotkey: str = "<f9>"                # global hotkey (works while Zoom is focused)
+
+    # Preview window
+    mirror_preview: bool = True
+    show_guides: bool = True
+
+    @classmethod
+    def load(cls, path: str) -> "Config":
+        cfg = cls()
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            known = {f.name for f in fields(cls)}
+            for k, v in data.items():
+                if k in known:
+                    setattr(cfg, k, v)
+        return cfg
+
+    def save(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, indent=2)
