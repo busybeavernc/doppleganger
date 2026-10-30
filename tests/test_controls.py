@@ -142,7 +142,26 @@ def _engine_stub(tmp_path):
     e.seg = None
     e.mode = "live"
     e.toast, e.toast_until = "", 0.0
+    e.tips_pending, e.ui_attached = False, False
     return e
+
+
+def test_record_shows_tips_first_when_a_window_is_open(tmp_path):
+    from doppleganger.recorder import State
+    e = _engine_stub(tmp_path)
+    e.ui_attached = True
+    e.record()                      # first press: tips, not recording yet
+    assert e.tips_pending and e.recorder.state == State.IDLE
+    e.cancel()                      # Esc / Not now
+    assert not e.tips_pending and e.recorder.state == State.IDLE
+    e.record()
+    e.record()                      # R again while tips show = start
+    assert not e.tips_pending and e.recording_active
+    e.cancel_recording()
+    e.cfg.show_record_tips = False  # "Don't show this again"
+    e.record()
+    assert not e.tips_pending and e.recording_active
+    e.cancel_recording()
 
 
 def test_record_again_cancels_and_saves_nothing(tmp_path):

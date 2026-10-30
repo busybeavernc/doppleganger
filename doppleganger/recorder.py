@@ -69,6 +69,7 @@ class Recorder:
         self.state = State.IDLE
         self.message = ""
         self.result_path: str | None = None  # set when a new loop is ready
+        self.progress = 0.0                    # stitching progress 0..1 (while PROCESSING)
         self.background: np.ndarray | None = None  # calibrated empty-room image (optional)
         self.segmenter = None                       # AI person segmentation (preferred)
         self._reset()
@@ -166,14 +167,17 @@ class Recorder:
 
     # ---------- finishing ----------
     def _finish(self) -> None:
-        self._writer.close()
+        self.progress = 0.0
         self.state = State.PROCESSING
-        self.message = "Stitching loop..."
+        self.message = "Stitching your new loop..."
         threading.Thread(target=self._process, daemon=True).start()
 
     def _process(self) -> None:
         try:
-            path = self.process_raw(self._raw_path, self.smalls, self.cfg)
+            self._writer.close()  # flush queued frames here, not on the video thread (no preview freeze)
+            self.progress = 0.05
+            path = self.process_raw(self._raw_path, self.smalls, self.cfg,
+                                    lambda p: setattr(self, "progress", 0.05 + 0.95 * p))
             os.remove(self._raw_path)
             if self._sil_thread is not None:
                 self._sil_thread.join()
@@ -186,7 +190,7 @@ class Recorder:
         self.state = State.IDLE
 
     @staticmethod
-    def process_raw(raw_path: str, smalls: list[np.ndarray], cfg: Config) -> str:
+    def process_raw(raw_path: str, smalls: list[np.ndarray], cfg: Config, progress=None) -> str:
         fps = cfg.fps
         # Allow ~2s to get back into position, then search the rest of the return zone.
         search_from = len(smalls) - int(max(1.0, cfg.return_prompt_seconds - 2.0) * fps)
@@ -206,12 +210,16 @@ class Recorder:
                 first = f
             last = f
             out.write(f)
+            if progress and i % 15 == 0:
+                progress(0.9 * i / (end_idx + 1))
         cap.release()
         n = bridge_length(diff, cfg.max_bridge_frames)
         if first is not None and last is not None:
             for f in bridge_frames(last, first, n):
                 out.write(f)
         out.release()
+        if progress:
+            progress(1.0)
 
         with open(out_path + ".json", "w", encoding="utf-8") as fh:
             json.dump({"frames": end_idx + 1 + n, "fps": fps, "end_frame": end_idx,

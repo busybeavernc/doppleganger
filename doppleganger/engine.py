@@ -174,6 +174,8 @@ class Engine:
         self.glitch = Glitch(cfg.glitch_max_seconds)
         self.calibrator: Calibrator | None = None
         self._record_after_calibration = False
+        self.tips_pending = False        # recording tips are showing; Start begins the recording
+        self.ui_attached = False         # a window is open that can show the tips
         self.preview_size = (960, 540)            # set by the window
         self.preview_rgb: np.ndarray | None = None
         self.library_version = 0                  # bumps when loops change, so the window refreshes
@@ -370,6 +372,9 @@ class Engine:
         if self.player is None:
             self.notify("No loop yet - record one first.")
             return
+        if self.recorder.state == State.PROCESSING:
+            self.notify("Still stitching your new loop - one moment.")
+            return
         if self.recorder.state != State.IDLE or self.calibrator is not None:
             self.notify("Finish recording/calibrating first.")
             return
@@ -411,8 +416,11 @@ class Engine:
         return (self.recorder.state in (State.COUNTDOWN, State.RECORDING)
                 or (self.calibrator is not None and self._record_after_calibration))
 
-    def record(self) -> None:
-        """Record button / R: starts a recording - or cancels the one in progress."""
+    def record(self, confirmed: bool = False) -> None:
+        """Record button / R: starts a recording - or cancels the one in progress.
+        With a window open, the first press shows the recording tips; Start (or R again) begins."""
+        if self.tips_pending and not confirmed:
+            confirmed = True  # R pressed again while the tips are showing = start
         if self.recording_active:
             self.cancel_recording()
         elif self.recorder.state == State.PROCESSING:
@@ -421,10 +429,14 @@ class Engine:
             self.notify("Cut back to LIVE before recording.")
         elif self.calibrator is not None:
             pass
+        elif self.ui_attached and self.cfg.show_record_tips and not confirmed:
+            self.tips_pending = True  # the window shows the tips; its Start button sends "record_now"
         elif self.background is None and self.seg is None:
             # No AI segmentation available: calibrate the room first, then record automatically.
+            self.tips_pending = False
             self.calibrate(then_record=True)
         else:
+            self.tips_pending = False
             self.recorder.start()
 
     def toggle_glitch(self) -> None:
@@ -449,8 +461,10 @@ class Engine:
         log.info("Recording cancelled by user")
 
     def cancel(self) -> None:
-        """Esc: cancel whatever is in progress (recording or calibration)."""
-        if self.recording_active:
+        """Esc: cancel whatever is in progress (tips, recording or calibration)."""
+        if self.tips_pending:
+            self.tips_pending = False
+        elif self.recording_active:
             self.cancel_recording()
         elif self.calibrator is not None:
             self.calibrator = None
@@ -547,6 +561,10 @@ class Engine:
                 self.release_cut()
             elif a == "record":
                 self.record()
+            elif a == "record_now":
+                self.record(confirmed=True)
+            elif a == "tips_closed":
+                self.tips_pending = False
             elif a == "calibrate":
                 self.calibrate()
             elif a == "cancel":
@@ -730,7 +748,10 @@ class Engine:
         prev = cv2.resize(prev, (max(2, w), max(2, h)), interpolation=cv2.INTER_AREA)
         if self.calibrator is not None:
             self._draw_calibration(prev)
-        elif recording or self.recorder.state == State.PROCESSING:
+        elif self.recorder.state == State.PROCESSING:
+            guides.banner(prev, f"Stitching your new loop...  {int(self.recorder.progress * 100)}%",
+                          brand.CV_VIOLET)
+        elif recording:
             prev = self.recorder.draw(prev, cfg.mirror_preview)
         elif glitching:
             # Same overlay as always: your live camera see-through over the frozen picture Zoom sees.

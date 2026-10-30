@@ -96,7 +96,10 @@ class HoldButton(tk.Label):
 
     def refresh(self, short: bool = False) -> None:
         e = self.e
-        if e.cut.waiting:
+        if e.recorder.state == State.PROCESSING:
+            pct = int(e.recorder.progress * 100)
+            text, bg, fg = (f"STITCHING {pct}%" if short else f"STITCHING NEW LOOP...  {pct}%"), SURFACE, MUTED
+        elif e.cut.waiting:
             text = f"SYNC {int(e.sync * 100)}%" if short else f"WAITING FOR SYNC  {int(e.sync * 100)}%"
             bg, fg = SURFACE_HI, AQUA
         elif e.mode == "loop":
@@ -135,6 +138,9 @@ class MainWindow:
         self.minibar: MiniBar | None = None
         self.wizard: Wizard | None = None
         self.settings: SettingsWindow | None = None
+        self.busy: BusyDialog | None = None
+        self.tips: RecordTipsDialog | None = None
+        engine.ui_attached = True  # Record shows the tips first
         self._build()
         self._no_button_focus(self.root)
         self._bind_keys()
@@ -382,6 +388,8 @@ class MainWindow:
             if self.minibar is not None and self.minibar.visible:
                 self.minibar.refresh(rgb)
         self._refresh_status()
+        self._refresh_busy()
+        self._refresh_tips()
         if self.wizard is not None:
             self.wizard.refresh()
         if self.settings is not None:
@@ -425,6 +433,30 @@ class MainWindow:
         if e.mic.is_muted:
             msg = (msg + "   ·   " if msg else "") + "Microphone muted while the LOOP is on air"
         self.status.configure(text=msg)
+
+    def _refresh_busy(self) -> None:
+        """While a new loop is being stitched: a small modal over the window, so nothing gets cut meanwhile."""
+        busy = self.e.recorder.state == State.PROCESSING
+        if busy and self.busy is None:
+            self.busy = BusyDialog(self.minibar.win if (self.minibar and self.minibar.visible) else self.root)
+        if self.busy is not None:
+            if busy:
+                self.busy.update(self.e.recorder.progress)
+            else:
+                self.busy.close()
+                self.busy = None
+
+    def _refresh_tips(self) -> None:
+        """'How to record a good loop' before each recording (until turned off)."""
+        want = self.e.tips_pending
+        if want and self.tips is None:
+            parent = self.minibar.win if (self.minibar and self.minibar.visible) else self.root
+            if parent is self.root and self.root.state() == "withdrawn":
+                self.show_main()
+            self.tips = RecordTipsDialog(self, parent)
+        elif not want and self.tips is not None:
+            self.tips.close()
+            self.tips = None
 
     # ---------- other windows ----------
     def show_minibar(self) -> None:
@@ -482,6 +514,150 @@ class MainWindow:
         self._engine_thread.join(timeout=5)
 
 
+RECORD_TIPS = (
+    ("Sit the way you will in the meeting",
+     "Same chair, distance and framing. Look at the screen, not the camera lens."),
+    ("Hold still for the first 10 seconds",
+     "This pose is where the loop starts and ends. The countdown tells you when you're free to move."),
+    ("Keep movement subtle and natural",
+     "Blink, breathe, nod slightly, glance at your screen now and then. A little movement looks alive; "
+     "a frozen face looks fake."),
+    ("Avoid anything memorable",
+     "No big laughs, waves, face-touching, drinking, looking away or adjusting hair or glasses. "
+     "The loop repeats, so a distinctive moment gets noticed the second time."),
+    ("Come back to the start for the last 10 seconds",
+     "You'll be prompted. Match the outline, same expression, and hold still until it finishes."),
+    ("Keep the room the same",
+     "Steady lighting, nobody walking behind you. Ideally record right before the meeting."),
+)
+
+
+class RecordTipsDialog:
+    """Shown when Record is pressed: what to expect, so the first loop is a good one."""
+
+    def __init__(self, main: "MainWindow", parent: tk.Misc):
+        self.main = main
+        self.e = main.e
+        self.win = tk.Toplevel(parent)
+        self.win.title("Before you record")
+        self.win.resizable(False, False)
+        self.win.configure(bg=MIDNIGHT)
+        self.win.transient(parent)
+        self.win.protocol("WM_DELETE_WINDOW", self.dismiss)
+        f = ttk.Frame(self.win, padding=(26, 20))
+        f.pack()
+        ttk.Label(f, text="Before you record", style="Title.TLabel").pack(anchor="w")
+        secs = int(round(main.cfg.loop_seconds))
+        intro = (f"You'll record about {secs // 60}:{secs % 60:02d} of yourself. It plays on repeat, "
+                 "so the goal is a calm, ordinary stretch of you paying attention.")
+        ttk.Label(f, text=intro, style="Small.TLabel", wraplength=440, justify="left").pack(anchor="w", pady=(2, 12))
+        hold = int(round(main.cfg.hold_still_seconds))
+        for i, (head, body) in enumerate(RECORD_TIPS, 1):
+            span = f"{hold} second" + ("" if hold == 1 else "s")
+            head, body = head.replace("10 seconds", span), body.replace("10 seconds", span)
+            row = ttk.Frame(f)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=str(i), width=2, bg=VIOLET, fg=CLOUD, font=(FONT, 10, "bold")).pack(
+                side="left", anchor="n", padx=(0, 10), ipady=1)
+            col = ttk.Frame(row)
+            col.pack(side="left", fill="x")
+            ttk.Label(col, text=head, style="Head.TLabel").pack(anchor="w")
+            ttk.Label(col, text=body, style="Small.TLabel", wraplength=410, justify="left").pack(anchor="w")
+        ttk.Label(f, text="Changed your mind mid-way? Press R or Esc to cancel; nothing is saved.",
+                  style="Small.TLabel").pack(anchor="w", pady=(10, 12))
+        bottom = ttk.Frame(f)
+        bottom.pack(fill="x")
+        self.v_again = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bottom, text="Don't show this again", variable=self.v_again).pack(side="left")
+        ttk.Button(bottom, text="Start recording  (R)", style="Accent.TButton",
+                   command=self.start).pack(side="right")
+        ttk.Button(bottom, text="Not now", command=self.dismiss).pack(side="right", padx=8)
+        for key in ("<Return>", "<KeyPress-r>", "<KeyPress-R>"):
+            self.win.bind(key, lambda _e: self.start())
+        self.win.bind("<Escape>", lambda _e: self.dismiss())
+        self.win.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = max(parent.winfo_width(), 1), max(parent.winfo_height(), 1)
+        w, h = self.win.winfo_reqwidth(), self.win.winfo_reqheight()
+        sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+        x = min(max(0, px + (pw - w) // 2), max(0, sw - w))
+        y = min(max(0, py + (ph - h) // 4), max(0, sh - h - 40))
+        self.win.geometry(f"+{x}+{y}")
+        try:
+            self.win.grab_set()
+        except tk.TclError:
+            pass
+        try:
+            if main.cfg.hide_from_screen_share:
+                winutil.hide_from_capture(self.win, True)
+        except Exception:  # noqa: BLE001
+            pass
+        self.win.focus_force()
+
+    def _remember(self) -> None:
+        if self.v_again.get():
+            self.main.cfg.show_record_tips = False
+            self.main.cfg.save(self.e.config_path)
+
+    def start(self) -> None:
+        self._remember()
+        self.e.request("record_now")
+
+    def dismiss(self) -> None:
+        self._remember()
+        self.e.request("tips_closed")
+
+    def close(self) -> None:
+        try:
+            self.win.grab_release()
+        except tk.TclError:
+            pass
+        self.win.destroy()
+
+
+class BusyDialog:
+    """Modal 'Stitching your new loop...' with progress. Blocks the window until the loop is ready."""
+
+    def __init__(self, parent: tk.Misc):
+        self.win = tk.Toplevel(parent)
+        self.win.title("Doppleganger")
+        self.win.resizable(False, False)
+        self.win.configure(bg=MIDNIGHT)
+        self.win.transient(parent)
+        self.win.protocol("WM_DELETE_WINDOW", lambda: None)  # can't be dismissed; closes by itself
+        f = ttk.Frame(self.win, padding=(26, 20))
+        f.pack()
+        ttk.Label(f, text="Stitching your new loop...", style="Head.TLabel").pack(anchor="w")
+        ttk.Label(f, text="Matching the end to the start so it repeats seamlessly. Cutting is paused "
+                          "for a moment.", style="Small.TLabel", wraplength=320, justify="left").pack(
+            anchor="w", pady=(4, 12))
+        self.bar = ttk.Progressbar(f, maximum=100, length=320, style="InSync.Horizontal.TProgressbar")
+        self.bar.pack()
+        self.win.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = max(parent.winfo_width(), 1), max(parent.winfo_height(), 1)
+        w, h = self.win.winfo_reqwidth(), self.win.winfo_reqheight()
+        self.win.geometry(f"+{px + (pw - w) // 2}+{py + max(0, (ph - h) // 3)}")
+        try:
+            self.win.grab_set()  # modal: clicks on the main window wait until the loop is ready
+        except tk.TclError:
+            pass
+        try:
+            winutil.hide_from_capture(self.win, True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def update(self, progress: float) -> None:
+        self.bar["value"] = int(progress * 100)
+
+    def close(self) -> None:
+        try:
+            self.win.grab_release()
+        except tk.TclError:
+            pass
+        self.win.destroy()
+
+
 class SettingsWindow:
     def __init__(self, main: MainWindow):
         self.main = main
@@ -515,6 +691,9 @@ class SettingsWindow:
                         command=self._changed).grid(sticky="w")
         self.v_outlines = tk.BooleanVar(value=self.cfg.show_outlines)
         ttk.Checkbutton(f, text="Show live (aqua) and loop (violet) outlines (O)", variable=self.v_outlines,
+                        command=self._changed).grid(sticky="w")
+        self.v_tips = tk.BooleanVar(value=self.cfg.show_record_tips)
+        ttk.Checkbutton(f, text="Show recording tips before each recording", variable=self.v_tips,
                         command=self._changed).grid(sticky="w")
         op = ttk.Frame(f)
         op.grid(sticky="ew", pady=(6, 0))
@@ -570,6 +749,7 @@ class SettingsWindow:
         c.hide_from_screen_share = self.v_hide.get()
         c.show_guides = self.v_guides.get()
         c.show_outlines = self.v_outlines.get()
+        c.show_record_tips = self.v_tips.get()
         c.crossfade_ms = 300 if self.v_fade.get() else 0
         c.overlay_opacity = round(float(self.v_opacity.get()), 2)
         c.save(self.e.config_path)
