@@ -215,37 +215,53 @@ jobs:
             dist/Doppleganger-mac-${{ matrix.arch }}.dmg
             dist/Doppleganger-mac-${{ matrix.arch }}.zip
 
+  # Windows is released as soon as it's built; the Mac files are added to the same release
+  # when they're ready (Mac build machines can sit in GitHub's queue for a while).
   release:
-    needs: [windows, mac]
-    # Windows must succeed; Mac builds are attached when they succeed.
-    if: always() && needs.windows.result == 'success'
+    needs: windows
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pub.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
+          name: windows
           path: artifacts
 
       - name: Publish release
+        id: pub
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           base=$(python3 -c "import re;print('.'.join(re.search(r'\"(\d+)\.(\d+)', open('doppleganger/__init__.py').read()).groups()))")
           v="$base.$(( ${{ github.run_number }} + BUILD_OFFSET ))"
-          files=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) | sort)
-          echo "$files"
-          mac=""
-          if echo "$files" | grep -q 'mac-arm64.dmg'; then mac="$mac Apple Silicon: Doppleganger-mac-arm64.dmg."; fi
-          if echo "$files" | grep -q 'mac-x86_64.dmg'; then mac="$mac Intel: Doppleganger-mac-x86_64.dmg."; fi
-          notes="**Windows:** download DopplegangerSetup.exe and run it."
-          if [ -n "$mac" ]; then
-            notes="$notes
+          notes="**Download:** https://busybeavernc.github.io/doppleganger/ (picks the right file for your computer).
 
-          **Mac:**$mac Open it, drag Doppleganger to Applications, then right-click it > Open the first time. Needs [OBS Studio](https://obsproject.com/download) 30+ for its virtual camera (the app walks you through it)."
-          fi
-          notes="$notes
+          **Windows:** DopplegangerSetup.exe. **Mac:** Doppleganger-mac-arm64.dmg (Apple Silicon) or Doppleganger-mac-x86_64.dmg (Intel), added a few minutes after this release appears; needs [OBS Studio](https://obsproject.com/download) 30+.
 
           $(git log -1 --pretty=%s)"
-          gh release create "v$v" $files installer/doppleganger-publisher.cer \
+          gh release create "v$v" artifacts/DopplegangerSetup.exe artifacts/Doppleganger.exe installer/doppleganger-publisher.cer \
             --title "Doppleganger $v" --notes "$notes" --target "$GITHUB_SHA" --latest
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+
+  mac-release:
+    needs: [release, mac]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mac-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Add the Mac apps to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(find artifacts -type f \( -name '*.dmg' -o -name '*.zip' \) | sort)
+          echo "$files"
+          if [ -z "$files" ]; then echo "::warning::No Mac build succeeded this time"; exit 0; fi
+          gh release upload "${{ needs.release.outputs.tag }}" $files --clobber -R "$GITHUB_REPOSITORY"
