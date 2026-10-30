@@ -117,13 +117,31 @@ def open_camera_extension_settings() -> None:
 
 # ---------- webcams ----------
 
+AV_VIDEO, AV_MUXED = "vide", "muxx"  # AVMediaTypeVideo / AVMediaTypeMuxed
+
+
+def _capture_device_class():
+    """AVCaptureDevice straight from the system framework via the Objective-C runtime.
+    (pyobjc's AVFoundation wrapper pulls in CoreMedia's Swift libraries, which don't load
+    inside the packaged app.)"""
+    import objc
+    from Foundation import NSBundle
+    NSBundle.bundleWithPath_("/System/Library/Frameworks/AVFoundation.framework").load()
+    cls = objc.lookUpClass("AVCaptureDevice")
+    objc.registerMetaDataForSelector(
+        b"AVCaptureDevice", b"requestAccessForMediaType:completionHandler:",
+        {"arguments": {3: {"callable": {"retval": {"type": b"v"},
+                                        "arguments": {0: {"type": b"^v"}, 1: {"type": b"Z"}}}}}})
+    return cls
+
+
 def list_cameras() -> list[tuple[int, str]]:
     """(index, name) in the order OpenCV's AVFoundation backend opens them."""
     try:
-        import AVFoundation  # pyobjc-framework-AVFoundation
-        devs = list(AVFoundation.AVCaptureDevice.devicesWithMediaType_(AVFoundation.AVMediaTypeVideo))
+        dev = _capture_device_class()
+        devs = list(dev.devicesWithMediaType_(AV_VIDEO) or [])
         try:
-            devs += list(AVFoundation.AVCaptureDevice.devicesWithMediaType_(AVFoundation.AVMediaTypeMuxed))
+            devs += list(dev.devicesWithMediaType_(AV_MUXED) or [])
         except Exception:  # noqa: BLE001
             pass
         devs.sort(key=lambda d: str(d.uniqueID()))  # OpenCV sorts by uniqueID too
@@ -143,18 +161,18 @@ def ensure_camera_access(timeout: float = 120.0) -> bool | None:
     """Ask for camera permission up front (main thread), so the first launch shows macOS's prompt
     instead of failing to open the webcam. True = allowed, False = denied, None = couldn't tell."""
     try:
-        import AVFoundation
         import Foundation
+        dev = _capture_device_class()
     except Exception:  # noqa: BLE001
         return None
-    media = AVFoundation.AVMediaTypeVideo
-    status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(media)
+    media = AV_VIDEO
+    status = dev.authorizationStatusForMediaType_(media)
     if status == 3:   # authorized
         return True
     if status in (1, 2):  # restricted / denied
         return False
     answer: dict = {}
-    AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+    dev.requestAccessForMediaType_completionHandler_(
         media, lambda granted: answer.setdefault("granted", bool(granted)))
     import time
     end = time.monotonic() + timeout

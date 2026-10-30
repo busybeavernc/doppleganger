@@ -9,7 +9,7 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 VERSION = os.environ.get("DOPPLEGANGER_VERSION", "0.1.0")
 
 datas = [(os.path.join(ROOT, "doppleganger", "assets"), "doppleganger/assets")]
-binaries, hidden = [], ["AVFoundation", "Quartz", "AppKit", "pyvirtualcam"]
+binaries, hidden = [], ["Quartz", "AppKit", "Foundation", "objc", "pyvirtualcam"]
 datas += collect_data_files("cv2")
 if importlib.util.find_spec("mediapipe"):  # AI person detection (falls back to room calibration without it)
     d, b, h = collect_all("mediapipe")

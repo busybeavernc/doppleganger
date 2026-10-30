@@ -107,7 +107,7 @@ def selftest() -> int:
         from . import macos
         check("obs", macos.obs_status)
         check("hotkeys-module", lambda: __import__("Quartz") and "Quartz ok")
-        check("avfoundation", lambda: __import__("AVFoundation") and "ok")
+        check("avfoundation", lambda: f"camera permission status {macos._capture_device_class().authorizationStatusForMediaType_(macos.AV_VIDEO)}")
     print("SELFTEST", "FAILED: " + ", ".join(problems) if problems else "OK", flush=True)
     return 1 if problems else 0
 
