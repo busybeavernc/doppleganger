@@ -1,7 +1,10 @@
 name: Build Windows app
 
-# Every push to main builds Doppleganger.exe and publishes it as release vMAJOR.MINOR.<build #>.
-# Installed copies of the app check this release list to update themselves.
+# Every push to main builds Doppleganger and publishes release vMAJOR.MINOR.<build #> with:
+#   DopplegangerSetup.exe       installer (Start menu, uninstall entry, removes the camera on uninstall)
+#   Doppleganger.exe            the app itself (installed copies update themselves from this)
+#   doppleganger-publisher.cer  the public half of the self-signed code-signing certificate
+# Code signing runs when the SIGNING_CERT_PFX_BASE64 / SIGNING_CERT_PASSWORD secrets are set.
 on:
   push:
     branches: [main]
@@ -9,6 +12,10 @@ on:
 
 permissions:
   contents: write
+
+env:
+  SIGN_PFX: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+  SIGN_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
 
 jobs:
   build:
@@ -62,22 +69,40 @@ jobs:
           Copy-Item $dll64.FullName driver_build\doppleganger_cam64.dll
           Copy-Item $dll32.FullName driver_build\doppleganger_cam32.dll
           Copy-Item driver\SOFTCAM-LICENSE.txt driver_build\
-          Get-ChildItem driver_build
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Build camera list helper
+      - name: Build helpers (camera list, microphone mute)
         shell: cmd
-        run: cl /nologo /O2 /EHsc /utf-8 driver\listcams.cpp /Fe:driver_build\listcams.exe /Fo:driver_build\ ole32.lib oleaut32.lib strmiids.lib && driver_build\listcams.exe
+        run: |
+          cl /nologo /O2 /EHsc /utf-8 driver\listcams.cpp /Fe:driver_build\listcams.exe /Fo:driver_build\ ole32.lib oleaut32.lib strmiids.lib || exit /b 1
+          cl /nologo /O2 /EHsc /utf-8 driver\micmute.cpp /Fe:driver_build\micmute.exe /Fo:driver_build\ ole32.lib || exit /b 1
+          driver_build\listcams.exe
+          driver_build\micmute.exe list
+
+      - name: Prepare code-signing certificate
+        if: env.SIGN_PFX != ''
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\sign.pfx", [Convert]::FromBase64String($env:SIGN_PFX))
+          "SIGN_FILE=$env:RUNNER_TEMP\sign.pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Sign camera driver and helpers
+        if: env.SIGN_PFX != ''
+        shell: cmd
+        run: signtool sign /q /fd SHA256 /f "%SIGN_FILE%" /p "%SIGN_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 /d "Doppleganger" driver_build\doppleganger_cam64.dll driver_build\doppleganger_cam32.dll driver_build\listcams.exe driver_build\micmute.exe
 
       - name: Build Doppleganger.exe
         run: >
           pyinstaller --noconfirm --onefile --windowed --name Doppleganger
+          --icon doppleganger/assets/icon.ico
+          --add-data "doppleganger/assets;doppleganger/assets"
           --add-data "driver_build/doppleganger_cam64.dll;driver"
           --add-data "driver_build/doppleganger_cam32.dll;driver"
           --add-data "driver_build/listcams.exe;driver"
+          --add-data "driver_build/micmute.exe;driver"
           --add-data "driver_build/SOFTCAM-LICENSE.txt;driver"
           --collect-data cv2
           --collect-binaries pyvirtualcam
@@ -86,10 +111,35 @@ jobs:
           --hidden-import pystray._win32
           launcher.py
 
+      - name: Sign Doppleganger.exe
+        if: env.SIGN_PFX != ''
+        shell: cmd
+        run: signtool sign /q /fd SHA256 /f "%SIGN_FILE%" /p "%SIGN_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 /d "Doppleganger" dist\Doppleganger.exe
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DMyAppVersion=${{ steps.ver.outputs.version }}" installer\doppleganger.iss
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: Sign installer
+        if: env.SIGN_PFX != ''
+        shell: cmd
+        run: signtool sign /q /fd SHA256 /f "%SIGN_FILE%" /p "%SIGN_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 /d "Doppleganger Setup" dist\DopplegangerSetup.exe
+
+      - name: Remove signing certificate
+        if: always() && env.SIGN_PFX != ''
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\sign.pfx"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Doppleganger-${{ steps.ver.outputs.version }}
-          path: dist/Doppleganger.exe
+          path: |
+            dist/Doppleganger.exe
+            dist/DopplegangerSetup.exe
 
       - name: Publish release
         shell: bash
@@ -97,7 +147,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           v="${{ steps.ver.outputs.version }}"
-          gh release create "v$v" dist/Doppleganger.exe \
+          gh release create "v$v" dist/DopplegangerSetup.exe dist/Doppleganger.exe installer/doppleganger-publisher.cer \
             --title "Doppleganger $v" \
-            --notes "$(git log -1 --pretty=%s)" \
+            --notes "**Install:** download DopplegangerSetup.exe and run it. $(git log -1 --pretty=%s)" \
             --target "$GITHUB_SHA" --latest

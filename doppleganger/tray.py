@@ -8,15 +8,15 @@ def start_tray(request: Callable[[str], None], version: str, state=None):
     """`state` (the App) supplies live menu contents: cameras, driver status."""
     try:
         import pystray
-        from PIL import Image, ImageDraw
-    except ImportError:
+        from PIL import Image
+    except Exception:  # noqa: BLE001 - no tray available (missing package or no desktop session)
         return None
 
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((4, 4, 60, 60), fill=(30, 120, 220))
-    d.ellipse((20, 14, 44, 38), fill=(255, 255, 255))        # head
-    d.pieslice((10, 36, 54, 80), 180, 360, fill=(255, 255, 255))  # shoulders
+    from . import brand
+    try:
+        img = Image.open(brand.asset("icon.png")).resize((64, 64), Image.LANCZOS)
+    except OSError:
+        img = Image.new("RGBA", (64, 64), brand.VIOLET)
 
     item = pystray.MenuItem
 

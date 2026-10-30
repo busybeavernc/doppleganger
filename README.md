@@ -1,107 +1,97 @@
-# Doppleganger
+<p align="center"><img src="doppleganger/assets/logo_dark.png" alt="Doppleganger — A seamless switch." width="420"></p>
 
-A tiny Windows app that replaces an OBS setup for one job: **record a seamless 1–3 minute loop of yourself before a meeting, then cut between that loop and your live webcam during the meeting.** The result appears in Zoom, Teams, Meet, etc. as a camera.
+**Doppleganger** records a short, seamless loop of you, then lets you switch between that loop and your live webcam in Zoom, Teams or any browser meeting — without anyone noticing. Windows 10/11.
 
 ## Install
 
-1. Download **Doppleganger.exe** from the repo's **Releases** page (newest at the top).
-2. Put it in its own folder, e.g. `Documents\Doppleganger`. Your loops and settings are saved next to it.
-3. Double-click it. The first time, Windows SmartScreen may warn about an unrecognized app: click **More info → Run anyway**. Right-click the taskbar icon → *Pin to taskbar* for one-click access.
-4. The first time, it offers to **add the Doppleganger camera**. Click **Yes** and approve the Windows permission prompt (adding a camera to Windows needs admin rights, once).
+1. Download **DopplegangerSetup.exe** from the [latest release](https://github.com/busybeavernc/doppleganger/releases/latest) and run it. No admin rights needed. It adds a Start-menu entry, an optional desktop shortcut, and an uninstall entry in *Settings → Apps*.
+2. Doppleganger opens with a short **setup guide**:
+   1. **Add the Doppleganger camera.** Windows asks for permission once.
+   2. **Choose your webcam.**
+   3. **Calibrate.**
+   4. **Record your first loop.**
+   5. **Pick "Doppleganger" as your camera** in Zoom/Teams.
 
-In Zoom, Teams or your browser, choose **Doppleganger** as your camera. OBS Studio is no longer needed.
+You can reopen the guide any time from the *Setup guide* button. OBS Studio is not needed.
 
-### The Doppleganger camera
-- It's a small DirectShow camera filter (64- and 32-bit) installed in `C:\ProgramData\Doppleganger`, built from [softcam](https://github.com/tshino/softcam) (MIT license) with its own name and ID, so it never clashes with OBS or other virtual cameras.
-- Zoom can select it any time. Until the app is running it shows black; if you quit the app, it holds the last picture, darkened.
-- Install, reinstall or remove it from the tray menu (*Install / Remove Doppleganger camera*). App updates that include a newer camera driver ask to refresh it.
-- If the Doppleganger camera isn't installed, the app falls back to **OBS Virtual Camera** (OBS must be installed and closed). Force one or the other with `"output_camera": "doppleganger"` or `"obs"` in `config.json`.
-- The preview's top-right corner shows where the picture is going ("Sending to Doppleganger camera"). It adds "(in use)" while an app like Zoom is showing it.
-
-### Choosing your webcam
-Right-click the tray icon → **Camera** and pick one, or press **K** in the preview to cycle through them. Your choice is remembered by name. Virtual cameras (Doppleganger, OBS…) are never listed, since using one as the live feed would loop the output back into itself. Each webcam gets its own silhouette calibration; press **C** after switching to a new one.
-
-No Python or VS Code is needed. Every change pushed to `main` is built automatically by GitHub (Actions → *Build Windows app*) and published as a new release.
+Your loops and settings live in `%APPDATA%\Doppleganger` and are kept if you uninstall. A copy run from its own folder that already contains `config.json` or `loops\` (as earlier versions did) keeps using that folder.
 
 ### Updates
-- **Automatic:** each time you open the app, it checks Releases. If there's a newer version, it shows an "Updating…" window, swaps in the new .exe and reopens. If you're offline, it simply opens as usual.
-- **Manual:** right-click the Doppleganger icon by the clock → **Check for updates**, or press **U** in the preview. If a recording is in progress, the update waits until it's finished.
-- Turn off automatic checks with `"auto_update": false` in `config.json`.
-- **While the repo is private**, the app needs a read-only token to see releases. Create a fine-grained GitHub token with *Contents: Read-only* access to this repo only, and paste it into `config.json` as `"update_token"`. If the repo is public, no token is needed.
+Each time it opens, Doppleganger checks the releases. If there's a newer version, it shows an "Updating…" window, swaps itself out and reopens. *Settings → Updates → Check now* checks manually. An update never interrupts you while the LOOP is on air or a recording is running.
 
-### Run from source instead
-Install Python 3.10+, then double-click `run.bat`. It creates a `.venv` and installs the requirements on the first run.
+### Code signing (self-signed)
+Release files are signed with a self-signed "Doppleganger" certificate (`doppleganger-publisher.cer` is attached to each release). Windows only trusts it on PCs that choose to: tick *Trust the Doppleganger publisher on this PC* in the installer, and Windows asks you to confirm. Other PCs still see the SmartScreen "unknown publisher" prompt (**More info → Run anyway**). A commercial code-signing certificate would remove that prompt everywhere; the build already supports one, so just swap the secrets.
 
-## Calibrating the silhouette (once per room)
+## The window
 
-The first time you press **R**, Doppleganger runs a ~10-second calibration before recording. You can redo it any time with **C** or the tray menu's *Calibrate silhouette*, e.g. after moving the camera or changing the lighting.
+| Area | What it does |
+|---|---|
+| **LIVE / LOOP** | What Zoom sees right now. LIVE is Aqua, LOOP is Violet; GLITCH appears in amber while a fake bad connection is running. |
+| **Sync** | How seamless a cut would be right now (Aqua = in sync). |
+| **Cut button** | **Tap:** cut immediately (hard cut). **Hold:** Doppleganger waits and cuts by itself the moment you're in sync; let go first to cancel. The button wears the colour of where you're cutting *to*. |
+| **Glitch / Record loop / Calibrate** | See below. |
+| **Webcam** | Pick which camera is your live feed (virtual cameras are never offered). |
+| **Loops** | Your loop library: thumbnails, names (*Rename*), *Use*, *Delete*. A ⚠ appears when a loop's lighting doesn't match your room right now (darker, brighter, different colour). |
+| **Mini bar** | A compact always-on-top strip with a live thumbnail, sync meter, Cut and Glitch, to park beside Zoom. Drag it by the logo; *Full view* brings the window back. |
+| **Settings** | Privacy, crossfade, guides, overlay strength, the Doppleganger camera, updates. |
 
-Keep facing the camera and lean or step slowly to the side the banner asks for. Red tint marks parts of the room it hasn't seen yet; it fades as you uncover them. It switches sides for you and finishes on its own once about 97% of the room has been seen.
+**Hidden from screen sharing:** Doppleganger's windows (main, mini bar, setup, settings) are excluded from screen capture. When you share your screen, viewers see what's behind them. This also hides them from your own screenshots. Turn it off in *Settings → Privacy*.
 
-This teaches the app what the empty room looks like (saved per webcam as `background-<camera>.png`). Your silhouette is then cut out by comparing against it, so the outline follows your hair, shoulders and arms instead of guessing, and the green "matched" glow is judged by how well your body shape overlaps the silhouette. Without a calibration it still works, with a rougher outline.
+**Silence while on the LOOP:** loops never contain sound, since Doppleganger only handles video. While the LOOP is on air, Doppleganger also **mutes your microphone** at the Windows level, so nothing you say or no background noise goes out, and unmutes it the moment you cut back to live. It only touches microphones that were unmuted, and if the app is ever closed unexpectedly while muted, your mic is restored the next time it starts. Turn it off in *Settings → Privacy*.
 
-## Recording a loop
-
-Press **R** while LIVE. Then:
-
-| Time (default 90s loop) | What you'll see | What to do |
-|---|---|---|
-| 3s countdown | "Get in your start pose" | Settle into a comfortable, centered position |
-| 0–10s | **HOLD STILL – start pose** + movement meter. Your silhouette is captured from the first frame and stays in the background for the rest of the recording | No big head/body movement |
-| 10–80s | "Recording – move naturally" | Look at the screen, nod, blink, look like you're listening |
-| 80–90s | "Step back into your silhouette" + first-frame thumbnail + **Match %** meter | Line yourself up with the silhouette and copy your starting expression. The silhouette **glows green** when you're back in position: hold still |
-
-Press **E** in the final stretch to end early once you're matched, or **Esc** to cancel.
-
-### How the seam is hidden
-- The app searches the final seconds for the frame that best matches frame 1 and ends the loop there.
-- If a small difference remains, it inserts a few **motion-matched bridge frames** (optical-flow morph from the last frame back to the first), so the restart glides instead of jumping. This is not a crossfade.
-- Each loop gets a `.json` next to it with the seam difference and number of bridge frames (lower difference = better match).
-
-Loops are saved in `loops/`. The newest one loads automatically.
-
-## During the meeting
+## Hotkeys (work while Zoom is focused)
 
 | Key | Action |
 |---|---|
-| **F9** (works even while Zoom is focused) or **Space** | Cut LIVE ↔ LOOP |
-| C | Calibrate the silhouette (see above) |
-| K | Switch to the next webcam |
-| G | Show/hide the silhouette / off-air overlay (preview only, never sent to Zoom) |
-| **F10** or B | Fake bad connection (see below) |
-| X | Toggle a 300 ms crossfade on cuts (**off by default** – hard cuts) |
-| U | Check for updates |
-| Q | Quit |
+| **F9** | **Tap** = cut now. **Hold** = cut when in sync |
+| **F10** | Fake a bad connection (glitch) |
+| Space | Same as F9 (tap/hold), while the Doppleganger window is focused |
+| R / C / B / K | Record loop / Calibrate / Glitch / next webcam |
+| E / Esc | End the recording now (final stretch) / cancel recording or calibration |
+| G / M | Show or hide guides / switch to the mini bar |
 
-The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Fake bad connection, Record new loop, Calibrate silhouette, Camera ▸, Install/Remove Doppleganger camera, Check for updates, Quit.
+The tray icon (by the clock) has the same commands, plus a webcam picker and Install/Remove camera.
 
-**First cut to the loop:** the loop starts at its first frame (your start pose). Before that first cut, the LIVE preview shows the start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut.
+## Calibrating the silhouette (once per room and webcam)
 
-**After that, the loop never restarts.** It keeps playing in the background, so cutting back and forth picks it up wherever it is. The preview then shows the feed that is *not* on air as a faint see-through overlay: the loop while you're LIVE, or your live camera while the LOOP is on air. Line yourself up with it. When the preview gets a green border ("In sync – cut is seamless"), cut. The overlay appears only in your preview, never in Zoom. G hides it; `overlay_opacity` in `config.json` sets its strength (default 0.35).
+The first time you record, Doppleganger runs a ~10-second calibration. Redo it with **Calibrate** after moving the camera or changing the lighting.
+
+Keep facing the camera and lean or step slowly to the side the banner asks for. Red tint marks the parts of the room it hasn't seen yet. This teaches Doppleganger what the empty room looks like (`background-<camera>.png`), so your silhouette follows your hair, shoulders and arms precisely, and the "matched" glow is judged by how well your body shape overlaps it.
+
+## Recording a loop
+
+| Time (default 90 s) | What you'll see | What to do |
+|---|---|---|
+| 3 s countdown | "Get in your start pose" | Settle into a comfortable, centered position |
+| 0–10 s | **HOLD STILL** + movement meter | No big head or body movement; this becomes the loop's first frame and your silhouette |
+| 10–80 s | "Recording – move naturally" | Look at the screen, nod, blink, look like you're listening |
+| 80–90 s | "Step back into your silhouette" + first-frame thumbnail + **Match %** | Line up with the silhouette and copy your starting expression; it **glows aqua** when you're back. Hold still |
+
+The app finds the frame in the final seconds that best matches the first, ends the loop there, and adds a few motion-matched bridge frames if needed, so the restart is invisible. The loop starts at its first frame the first time you cut to it, then keeps playing in the background, so later cuts pick it up wherever it is.
+
+## Before you cut
+
+- **Before the first cut**, the preview shows the loop's start-pose silhouette. Get into it (it glows aqua), then cut, or just *hold* F9 and let Doppleganger cut when you're there.
+- **After that**, the preview shows the off-air feed faded over the on-air one: the loop while you're LIVE, your camera while the LOOP is on air. Line up until the aqua border appears, or hold F9.
 
 ## Called on unexpectedly? Fake a bad connection
 
-Press **F10** (works while Zoom is focused), **B** in the preview, or *Fake bad connection* in the tray menu.
+Press **F10**. Zoom's picture turns jerky and random: frozen frames, uneven bursts, and the occasional sharp in-between frame. It never goes blurry or blocky and never drops out. Your preview keeps the overlay, so you can line up with the frozen picture. Then press (or hold) **F9**: the next jump reveals you live, with a few catch-up steps before it runs smoothly. F10 again also ends it, and it stops by itself after 30 s.
 
-- Zoom's picture turns jerky and random: frozen frames held for anywhere from a fraction of a second to about 2.5 seconds, with short uneven bursts in between. Some jumps land on a frozen **in-between frame**, a sharp motion-based midpoint between two frames. The picture never goes blurry or blocky, and never drops out.
-- Your preview keeps the usual overlay: it shows the frozen picture Zoom sees, with your live camera see-through on top. Line up with the frozen picture (the green border means you're in sync).
-- When you're ready, press **F9**. The next jump reveals you live: a clean jump, never a mix of loop and live. After a few uneven catch-up steps, it runs smoothly again.
-- Pressing F10 again also ends it. It ends on its own after 30 seconds (`glitch_max_seconds`).
+## The Doppleganger camera
 
-This affects video only. Your microphone is untouched, so if you need a moment, mute until you're live.
+A small DirectShow camera filter (64- and 32-bit) installed in `C:\ProgramData\Doppleganger`, built from [softcam](https://github.com/tshino/softcam) (MIT) with its own name and ID, so it never clashes with OBS or other virtual cameras. Zoom can select it any time: it shows black until Doppleganger is running, and the last picture, darkened, after you quit. If it isn't installed, Doppleganger falls back to OBS Virtual Camera (OBS must be installed and closed).
 
-## Settings
+## Settings file
 
-`config.json` is created on first run. Useful fields: `camera_name`, `output_camera`, `width`/`height`/`fps`, `loop_seconds`, `hold_still_seconds`, `return_prompt_seconds`, `crossfade_ms`, `overlay_opacity`, `glitch_hotkey`, `glitch_max_seconds`, `hotkey` (pynput format, e.g. `"<ctrl>+<alt>+l"`).
-
-Command-line shortcuts: `run.bat --camera 1 --seconds 120`, or `run.bat --no-vcam` for preview only.
-
-## Roadmap
-- Automatic cut back to live when you start talking
-- Loop library / picker
+`config.json` in the data folder. Useful fields: `camera_name`, `output_camera` (`auto`/`doppleganger`/`obs`), `width`/`height`/`fps`, `loop_seconds`, `hold_still_seconds`, `return_prompt_seconds`, `crossfade_ms`, `overlay_opacity`, `hotkey`, `glitch_hotkey` (pynput format, e.g. `"<ctrl>+<alt>+l"`), `glitch_max_seconds`, `mute_mic_on_loop`, `hide_from_screen_share`, `auto_update`.
 
 ## Development
+
 ```
 pip install -r requirements.txt pytest
 python -m pytest tests
+python launcher.py            # run from source (OBS Virtual Camera is used unless the camera DLLs are built)
 ```
+
+Every push to `main` is built by GitHub Actions (*Build Windows app*). It compiles the camera driver and helpers, packages `Doppleganger.exe`, builds the Inno Setup installer, signs everything when the `SIGNING_CERT_PFX_BASE64` / `SIGNING_CERT_PASSWORD` secrets are set, and publishes a release.

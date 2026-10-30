@@ -14,10 +14,11 @@ import numpy as np
 
 from .calibrate import lab_difference, split_background
 from .guides import SMALL_SIZE, Box
+from . import brand
 
 OUTLINE_IDLE = (235, 235, 235)
-OUTLINE_MATCH = (90, 255, 90)
-TINT = np.array([45, 30, 10], np.float32)  # faint cool fill: "you were here"
+OUTLINE_MATCH = brand.CV_AQUA
+TINT = np.array(brand.CV_VIOLET, np.float32) * 0.16  # faint violet fill: "you were here"
 
 
 class Silhouette:
@@ -56,7 +57,7 @@ class Silhouette:
             tint = (soft[..., None] * TINT).astype(np.uint8)
             # glow around (outside) the silhouette
             glow = np.zeros((h, w, 3), np.uint8)
-            cv2.drawContours(glow, contours, -1, (60, 255, 60), max(8, w // 55), cv2.LINE_AA)
+            cv2.drawContours(glow, contours, -1, brand.CV_AQUA, max(8, w // 55), cv2.LINE_AA)
             glow = cv2.GaussianBlur(glow, (0, 0), max(4, w / 110))
             glow = cv2.add(glow, glow)
             glow = (glow.astype(np.float32) * (1.0 - soft[..., None])).astype(np.uint8)

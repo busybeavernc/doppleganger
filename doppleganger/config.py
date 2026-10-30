@@ -22,6 +22,7 @@ class Config:
     countdown_seconds: int = 3
     max_bridge_frames: int = 8          # motion-matched frames inserted at the loop seam
     loops_dir: str = "loops"
+    active_loop: str = ""               # loop file in use (newest if empty)
 
     # Live <-> loop switching
     crossfade_ms: int = 0               # 0 = hard cut (default)
@@ -39,9 +40,16 @@ class Config:
     update_repo: str = "busybeavernc/doppleganger"
     update_token: str = ""              # read-only GitHub token, needed only while the repo is private
 
-    # Preview window
+    # Privacy
+    mute_mic_on_loop: bool = True       # silence: mute the PC's microphones while the LOOP is on air
+    hide_from_screen_share: bool = True # Doppleganger's windows are invisible to screen sharing
+
+    # Window
     mirror_preview: bool = True
     show_guides: bool = True
+    setup_done: bool = False            # first-run setup wizard completed (or skipped)
+    mini_bar: bool = False              # start in the compact always-on-top bar
+    mini_bar_pos: str = ""              # "+x+y" where you last left the mini bar
 
     @classmethod
     def load(cls, path: str) -> "Config":

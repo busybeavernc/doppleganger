@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from . import brand
+
 Box = tuple[int, int, int, int]  # x, y, w, h
 
 SMALL_SIZE = (160, 90)
@@ -216,20 +218,25 @@ def draw_meter(img, label: str, value: float, y: int, good_high: bool = True) ->
     value = float(np.clip(value, 0, 1))
     good = value >= 0.82 if good_high else value <= 0.35
     ok_mid = value >= 0.6 if good_high else value <= 0.6
-    color = (70, 200, 70) if good else ((0, 190, 255) if ok_mid else (60, 60, 230))
-    rounded_rect(img, (x0, y), (x0 + bw, y + bh), (40, 40, 40), bh // 2, 0.85)
+    color = brand.CV_AQUA if good else (brand.CV_AMBER if ok_mid else brand.CV_DANGER)
+    rounded_rect(img, (x0, y), (x0 + bw, y + bh), brand.CV_MIDNIGHT, bh // 2, 0.85)
     if value > 0.02:
         rounded_rect(img, (x0, y), (x0 + max(bh, int(bw * value)), y + bh), color, bh // 2)
     put_text(img, label, (x0 + bw + 12, y + bh - 2), 0.55)
 
 
 def banner(img, text: str, color=(0, 0, 0)) -> None:
+    """Rounded banner near the top; the text shrinks to fit narrow previews."""
     h, w = img.shape[:2]
-    tw, th = text_size(text, 0.85, bold=True)
+    scale = 0.85
+    tw, th = text_size(text, scale, bold=True)
+    while tw > w - 60 and scale > 0.45:
+        scale -= 0.05
+        tw, th = text_size(text, scale, bold=True)
     y = max(int(h * 0.06), 58)  # below the LIVE/LOOP label
-    rounded_rect(img, (w // 2 - tw // 2 - 18, y), (w // 2 + tw // 2 + 18, y + th + 16), color, 12, 0.88)
-    _, _, base = _text_patch(text, _px(0.85), (255, 255, 255), True, False)
-    put_text(img, text, (w // 2 - tw // 2, y + 8 + base), 0.85, bold=True, shadow=False)
+    rounded_rect(img, (w // 2 - tw // 2 - 18, y), (w // 2 + tw // 2 + 18, y + th + 16), color, 12, 0.9)
+    _, _, base = _text_patch(text, _px(scale), (255, 255, 255), True, False)
+    put_text(img, text, (w // 2 - tw // 2, y + 8 + base), scale, bold=True, shadow=False)
 
 
 def pill(img, text: str, right: int, top: int, color, scale: float = 0.8) -> int:

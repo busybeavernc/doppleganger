@@ -4,13 +4,6 @@ import sys
 import traceback
 
 
-def _app_dir() -> str:
-    # Keep config.json and loops/ next to the .exe, not in a temp folder.
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def _error_box(msg: str) -> None:
     try:
         import ctypes
@@ -20,12 +13,14 @@ def _error_box(msg: str) -> None:
 
 
 if __name__ == "__main__":
-    os.chdir(_app_dir())
+    # Loops, calibrations and settings live in the data folder (see doppleganger/paths.py).
+    from doppleganger.paths import data_dir
+    os.chdir(data_dir())
     try:
         from doppleganger.app import main
         main()
     except Exception as e:  # noqa: BLE001
         with open("doppleganger-error.log", "w", encoding="utf-8") as f:
             traceback.print_exc(file=f)
-        _error_box(f"Doppleganger stopped:\n\n{e}\n\nDetails were saved to doppleganger-error.log")
+        _error_box(f"Doppleganger stopped:\n\n{e}\n\nDetails were saved to:\n{os.path.abspath('doppleganger-error.log')}")
         sys.exit(1)

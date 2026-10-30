@@ -26,6 +26,7 @@ from . import guides
 from .config import Config
 from .silhouette import Silhouette, extract, glow_amount
 from .stitch import bridge_frames, bridge_length, find_best_end
+from . import brand
 
 
 class State(Enum):
@@ -223,7 +224,7 @@ class Recorder:
         h, w = preview.shape[:2]
         if self.state == State.COUNTDOWN:
             n = cfg.countdown_seconds - int(time.monotonic() - self.t0)
-            guides.banner(preview, f"Get in your start pose and HOLD STILL...  {n}", (0, 120, 200))
+            guides.banner(preview, f"Get in your start pose and HOLD STILL...  {n}", brand.CV_VIOLET)
             return preview
         if self.state != State.RECORDING:
             return preview
@@ -236,9 +237,9 @@ class Recorder:
         if returning and self.first_frame is not None:
             ghost = cv2.flip(self.first_frame, 1) if mirrored else self.first_frame
             if glow >= 0.99:
-                guides.banner(preview, "Matched - HOLD STILL", (0, 130, 0))
+                guides.banner(preview, "Matched - HOLD STILL", brand.CV_AQUA_DARK)
             else:
-                guides.banner(preview, "Step back into your silhouette - same expression", (0, 90, 200))
+                guides.banner(preview, "Step back into your silhouette - same expression", brand.CV_VIOLET)
             guides.draw_meter(preview, f"Match {int(self.match * 100)}%", self.match, h - 90)
             # small inset of the first frame, for matching your expression
             iw = w // 5
@@ -248,9 +249,9 @@ class Recorder:
             guides.put_text(preview, "first frame", (w - iw - 6, top + inset.shape[0] + 20), 0.5)
         elif self.in_start_hold():
             guides.banner(preview, f"HOLD STILL - start pose  ({cfg.hold_still_seconds - self.elapsed:0.0f}s)",
-                          (0, 120, 200))
+                          brand.CV_VIOLET)
         elif self.in_end_hold():
-            guides.banner(preview, "HOLD STILL", (0, 120, 200))
+            guides.banner(preview, "HOLD STILL", brand.CV_VIOLET)
         else:
             until = self.remaining - cfg.return_prompt_seconds
             guides.put_text(preview, f"Recording - move naturally  (return cue in {until:0.0f}s)",
@@ -259,10 +260,10 @@ class Recorder:
         if self.in_start_hold() or self.in_end_hold():
             guides.draw_meter(preview, "Movement", self.motion, h - 55, good_high=False)
             if self.motion > 0.6:
-                guides.put_text(preview, "Too much movement!", (20, h - 110), 0.8, (60, 60, 255))
+                guides.put_text(preview, "Too much movement!", (20, h - 110), 0.8, brand.CV_DANGER)
 
         # recording dot + time
-        cv2.circle(preview, (w - 30, h - 30), 10, (0, 0, 230), -1, cv2.LINE_AA)
+        cv2.circle(preview, (w - 30, h - 30), 10, brand.CV_DANGER, -1, cv2.LINE_AA)
         guides.put_text(preview, f"{self.elapsed:0.0f}/{cfg.loop_seconds:0.0f}s", (w - 160, h - 22), 0.6)
         if self.in_return_zone():
             guides.put_text(preview, "E = end now", (w - 160, h - 50), 0.5)

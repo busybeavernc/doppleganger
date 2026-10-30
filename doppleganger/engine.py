@@ -1,0 +1,715 @@
+"""Doppleganger engine: camera in, loop/live/glitch out to the virtual camera, preview for the window."""
+from __future__ import annotations
+
+import logging
+import os
+import queue
+import re
+import threading
+import time
+
+import cv2
+import numpy as np
+
+from . import guides, library, updater
+from . import vcam as vcamlib
+from .calibrate import Calibrator
+from .camera import Camera
+from .config import Config
+from .cutcontrol import SYNC_THRESHOLD, CutController
+from .glitch import Glitch
+from .hotkeys import GlobalHotkeys
+from .mic import MicMuter
+from .player import LoopPlayer, latest_loop
+from .recorder import Recorder, State
+from .silhouette import Silhouette, glow_amount
+from .tray import start_tray
+from . import brand
+
+log = logging.getLogger("doppleganger")
+BACKGROUND_FILE = "background.png"  # (older versions) calibrated empty room
+
+
+class Output:
+    """Sends frames to the virtual camera Zoom watches.
+
+    Prefers our own "Doppleganger" camera; falls back to OBS Virtual Camera when
+    ours isn't installed (or `output_camera` says so). If it can't connect, it
+    retries every few seconds and the preview shows why - never silently.
+    """
+
+    RETRY_SECONDS = 3.0
+
+    def __init__(self, cfg: Config, enabled: bool):
+        self.cfg = cfg
+        self.enabled = enabled
+        self.cam = None
+        self.backend = ""
+        self.error = "" if enabled else "Virtual camera disabled (--no-vcam)"
+        self.device = ""
+        self._next_try = 0.0
+        self._last_logged = ""
+        if enabled:
+            self._connect()
+
+    def _pick_backend(self) -> str:
+        choice = self.cfg.output_camera
+        if choice in ("doppleganger", "obs"):
+            return choice
+        return "doppleganger" if vcamlib.installed_version() else "obs"
+
+    def _connect(self) -> None:
+        self._next_try = time.monotonic() + self.RETRY_SECONDS
+        backend = self._pick_backend()
+        try:
+            if backend == "doppleganger":
+                self.cam = vcamlib.DopplegangerCamera(self.cfg.width, self.cfg.height, self.cfg.fps)
+            else:
+                import pyvirtualcam
+                self.cam = pyvirtualcam.Camera(self.cfg.width, self.cfg.height, self.cfg.fps,
+                                               fmt=pyvirtualcam.PixelFormat.BGR, backend="obs")
+            self.backend, self.device, self.error = backend, self.cam.device, ""
+            log.info("Virtual camera connected: %s", self.device)
+        except Exception as e:  # noqa: BLE001
+            self.cam = None
+            self.error = _explain_vcam_error(backend, str(e))
+            if self.error != self._last_logged:  # log each distinct problem once
+                log.warning("Virtual camera (%s) not connected: %s", backend, e)
+                self._last_logged = self.error
+
+    def reconnect(self) -> None:
+        self.close()
+        if self.enabled:
+            self._connect()
+
+    @property
+    def connected(self) -> bool:
+        return self.cam is not None
+
+    @property
+    def viewer_connected(self) -> bool:
+        return bool(getattr(self.cam, "viewer_connected", False))
+
+    def send(self, frame: np.ndarray) -> None:
+        if self.cam is None:
+            if self.enabled and time.monotonic() >= self._next_try:
+                self._connect()
+            return
+        try:
+            self.cam.send(frame)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Virtual camera send failed: %s", e)
+            self.close()
+            self.error = f"Lost connection to {self.device or 'the virtual camera'} - reconnecting..."
+
+    def close(self) -> None:
+        if self.cam:
+            try:
+                self.cam.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.cam = None
+
+
+def _explain_vcam_error(backend: str, msg: str) -> str:
+    m = msg.lower()
+    if backend == "doppleganger":
+        if "already in use" in m:
+            return "The Doppleganger camera is in use by another copy of this app - close it"
+        return f"Doppleganger camera not available ({msg}) - reinstall it from the tray menu"
+    if "not installed" in m:
+        return ("No camera to send to - install the Doppleganger camera (tray menu) "
+                "or OBS Studio")
+    if "could not be started" in m or "in use" in m or "already" in m:
+        return "OBS Virtual Camera is busy - in OBS click 'Stop Virtual Camera' (or close OBS)"
+    return f"Virtual camera not connected: {msg}"
+
+
+def background_file(camera_name: str) -> str:
+    """Calibration is per camera (each one sees the room differently)."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", camera_name).strip("-").lower() or "camera"
+    return f"background-{slug}.png"
+
+
+class Engine:
+    """Everything that happens per video frame. Runs on its own thread (see run()).
+
+    Other threads (the window, tray, hotkeys) never call methods that change state
+    directly - they `request()` an action, which runs here between frames.
+    """
+
+    def __init__(self, cfg: Config, vcam: bool, config_path: str):
+        self.cfg = cfg
+        self.config_path = config_path
+        idx, self.camera_name = vcamlib.resolve_camera(cfg.camera_name, cfg.camera_index)
+        self.camera = Camera(idx, cfg.width, cfg.height, cfg.fps)
+        if (cfg.camera_name, cfg.camera_index) != (self.camera_name, idx):
+            cfg.camera_name, cfg.camera_index = self.camera_name, idx
+            cfg.save(config_path)
+        self.output = Output(cfg, vcam)
+        self.recorder = Recorder(cfg)
+        self.mic = MicMuter()
+        self.cut = CutController()
+        self.mode = "live"
+        self.fade_from: str | None = None
+        self.fade_start = 0.0
+        self.player: LoopPlayer | None = None
+        self.loop_path: str | None = None
+        self.loop_light = None
+        self.live_light = None
+        self.loop_sil: Silhouette | None = None
+        self.loop_matcher: guides.PoseMatcher | None = None
+        self.loop_running = False   # becomes True on the first cut to the loop
+        self.sync = 0.0             # 0..1: how seamless a cut right now would be
+        self.toast = ""
+        self.toast_until = 0.0
+        self._actions: queue.Queue[str] = queue.Queue()
+        self._pending_update: str | None = None
+        self._updating = False
+        self.glitch = Glitch(cfg.glitch_max_seconds)
+        self.calibrator: Calibrator | None = None
+        self._record_after_calibration = False
+        self.preview_size = (960, 540)            # set by the window
+        self.preview_rgb: np.ndarray | None = None
+        self.library_version = 0                  # bumps when loops change, so the window refreshes
+        self.running = False
+        self.on_quit = None                       # set by the window
+        self.ask = _ask_yes_no                    # replaced by the window's own dialogs
+        self._light_at = 0.0
+        self._load_background()
+        path = self._initial_loop()
+        if path:
+            self._load_loop(path, announce=False)
+        self._start_global_hotkeys()
+        self._tray = start_tray(self.request, updater.current_version(), self)
+
+    # ---------- requests from other threads ----------
+    def request(self, action: str) -> None:
+        self._actions.put(action)
+
+    # ---------- tray menu state (called from the tray thread) ----------
+    def tray_cameras(self) -> list[str]:
+        now = time.monotonic()
+        if now - getattr(self, "_cams_at", -99) > 5:  # cache: menus rebuild often
+            self._cams = [n for _, n in vcamlib.real_cameras()]
+            self._cams_at = now
+        return self._cams
+
+    def tray_current_camera(self) -> str:
+        return self.camera_name
+
+    def tray_driver_installed(self) -> bool:
+        return vcamlib.installed_version() is not None
+
+    def tray_driver_available(self) -> bool:
+        return vcamlib.bundled()
+
+    # ---------- camera selection ----------
+    def _load_background(self) -> None:
+        path = background_file(self.camera_name)
+        if not os.path.exists(path) and os.path.exists(BACKGROUND_FILE):
+            path = BACKGROUND_FILE  # calibration saved by an older version
+        self.background = cv2.imread(path, cv2.IMREAD_UNCHANGED) if os.path.exists(path) else None
+        self.recorder.background = self.background
+        if self.player is not None and self.player.first_frame is not None:
+            self._make_loop_matcher()
+
+    def switch_camera(self, name: str | None = None) -> None:
+        """Use the named camera, or the next real camera if no name is given."""
+        if self.recorder.state != State.IDLE or self.calibrator is not None:
+            self.notify("Finish recording/calibrating before switching cameras.")
+            return
+        cams = vcamlib.real_cameras()
+        if not cams:
+            self.notify("Couldn't list cameras on this PC.")
+            return
+        if name is None:  # cycle
+            names = [n for _, n in cams]
+            name = names[(names.index(self.camera_name) + 1) % len(names)] if self.camera_name in names else names[0]
+        match = next(((i, n) for i, n in cams if n == name), None)
+        if match is None:
+            self.notify(f"Camera not found: {name}")
+            return
+        if match[1] == self.camera_name:
+            return
+        old = self.camera
+        try:
+            self.camera = Camera(match[0], self.cfg.width, self.cfg.height, self.cfg.fps)
+        except RuntimeError as e:
+            self.notify(str(e), 6)
+            return
+        old.close()
+        self.camera_name = match[1]
+        self.cfg.camera_name, self.cfg.camera_index = match[1], match[0]
+        self.cfg.save(self.config_path)
+        self._load_background()
+        tip = "" if self.background is not None else " - calibrate the silhouette for it"
+        self.notify(f"Camera: {match[1]}{tip}", 6)
+        log.info("Switched camera to %s (#%d)", match[1], match[0])
+
+    # ---------- Doppleganger camera driver ----------
+    def install_driver(self, ask: bool = False) -> None:
+        if not vcamlib.bundled():
+            self.notify("The Doppleganger camera is only included in the installed app.")
+            return
+        if ask and not self.ask(
+                "Add the Doppleganger camera?",
+                "Doppleganger can add its own camera, named \"Doppleganger\", that Zoom, Teams and "
+                "browsers can use - no OBS Studio needed.\n\nWindows will ask for permission once.\n\n"
+                "Install it now?"):
+            return
+        self.notify("Installing the Doppleganger camera - approve the Windows prompt...", 120)
+
+        def work():
+            ok, detail = vcamlib.install()
+            log.info("Driver install: %s (%s)", ok, detail)
+            if ok:
+                self.request("driver_installed")
+            else:
+                self.notify(f"Camera install didn't finish ({detail}).", 8)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def uninstall_driver(self) -> None:
+        if not self.ask("Remove the Doppleganger camera?",
+                        "Zoom and other apps will no longer see the \"Doppleganger\" camera.\n\nRemove it?"):
+            return
+        self.output.close()  # release our handle on the DLL first
+
+        def work():
+            ok, detail = vcamlib.uninstall()
+            self.notify("Doppleganger camera removed." if ok else f"Removal didn't finish ({detail}).", 6)
+            self.request("output_reconnect")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---------- loops ----------
+    def _initial_loop(self) -> str | None:
+        p = os.path.join(self.cfg.loops_dir, self.cfg.active_loop) if self.cfg.active_loop else ""
+        return p if p and os.path.exists(p) else latest_loop(self.cfg.loops_dir)
+
+    def _load_loop(self, path: str, announce: bool = True) -> None:
+        if self.player:
+            self.player.close()
+        self.player = LoopPlayer(path, (self.cfg.width, self.cfg.height))
+        self.loop_path = path
+        self.loop_running = False
+        self.sync = 0.0
+        self.loop_light = library.info(path).lighting
+        # Start-pose silhouette + matcher, so LIVE preview shows when a cut to the loop will be invisible.
+        self.loop_sil = Silhouette.load(path + ".mask.png") if os.path.exists(path + ".mask.png") else None
+        self.loop_matcher = None
+        if self.player.first_frame is not None:
+            self._make_loop_matcher()
+        if self.cfg.active_loop != os.path.basename(path):
+            self.cfg.active_loop = os.path.basename(path)
+            self.cfg.save(self.config_path)
+        self.library_version += 1
+        if announce:
+            self.notify(f"Loop: {library.info(path).name}")
+
+    def _make_loop_matcher(self) -> None:
+        self.loop_matcher = guides.PoseMatcher(self.player.first_frame, background=self.background)
+        if self.loop_sil is not None:
+            self.loop_matcher.set_silhouette(self.loop_sil)
+
+    def use_loop(self, path: str) -> None:
+        if self.mode == "loop":
+            self.notify("Cut back to LIVE before switching loops.")
+            return
+        if os.path.exists(path):
+            self._load_loop(path)
+
+    def delete_loop(self, path: str) -> None:
+        if path == self.loop_path:
+            if self.mode == "loop":
+                self.notify("That loop is on air - cut to LIVE first.")
+                return
+            self.player.close()
+            self.player, self.loop_path, self.loop_matcher, self.loop_sil = None, None, None, None
+            self.loop_running = False
+        library.delete(path)
+        nxt = latest_loop(self.cfg.loops_dir)
+        if self.player is None and nxt:
+            self._load_loop(nxt, announce=False)
+        elif self.player is None:
+            self.cfg.active_loop = ""
+            self.cfg.save(self.config_path)
+        self.library_version += 1
+
+    def _start_global_hotkeys(self) -> None:
+        try:
+            self._hk = GlobalHotkeys({
+                self.cfg.hotkey: (lambda: self.request("cut_press"), lambda: self.request("cut_release")),
+                self.cfg.glitch_hotkey: (lambda: self.request("glitch"), None),
+            })
+            self._hk.start()
+        except Exception as e:  # noqa: BLE001
+            self._hk = None
+            log.warning("Global hotkeys disabled: %s", e)
+
+    def notify(self, msg: str, secs: float = 4.0) -> None:
+        self.toast, self.toast_until = msg, time.monotonic() + secs
+
+    @property
+    def message(self) -> str:
+        if self.recorder.state == State.PROCESSING:
+            return self.recorder.message
+        return self.toast if time.monotonic() < self.toast_until else ""
+
+    # ---------- actions ----------
+    def toggle(self) -> None:
+        if self.player is None:
+            self.notify("No loop yet - record one first.")
+            return
+        if self.recorder.state != State.IDLE or self.calibrator is not None:
+            self.notify("Finish recording/calibrating first.")
+            return
+        new = "loop" if self.mode == "live" else "live"
+        if new == "loop" and not self.loop_running:
+            # First activation starts at frame 1 (your start pose). From then on the loop
+            # keeps playing in the background and is never restarted by a cut.
+            self.player.restart()
+            self.loop_running = True
+        if self.glitch.active:
+            # The cut lands inside the glitch: the next "jump" reveals the new feed,
+            # then the picture recovers like a connection coming back.
+            self.glitch.recover(time.monotonic(), delay=0.4, clean_jump=True)
+        elif self.cfg.crossfade_ms > 0:
+            self.fade_from, self.fade_start = self.mode, time.monotonic()
+        self.mode = new
+        self._apply_mic()
+
+    def _apply_mic(self) -> None:
+        """Silence while the LOOP is on air (if enabled); your mic is back the moment you're live."""
+        if self.mode == "loop" and self.cfg.mute_mic_on_loop:
+            self.mic.mute()
+        else:
+            self.mic.restore()
+
+    def press_cut(self) -> None:
+        self.cut.press(time.monotonic())
+
+    def release_cut(self) -> None:
+        r = self.cut.release(time.monotonic())
+        if r == "cut":
+            self.toggle()
+        elif r == "cancel":
+            self.notify("Hold-to-sync cancelled - you weren't in sync yet. Tap to cut anyway.", 5)
+
+    def record(self) -> None:
+        if self.mode == "loop":
+            self.notify("Cut back to LIVE before recording.")
+        elif self.calibrator is not None:
+            pass
+        elif self.background is None:
+            # First recording: calibrate the silhouette first, then record automatically.
+            self.calibrate(then_record=True)
+        else:
+            self.recorder.start()
+
+    def toggle_glitch(self) -> None:
+        was = self.glitch.active and not self.glitch.recovering
+        self.glitch.toggle(time.monotonic())
+        log.info("Glitch %s", "ending" if was else "started")
+
+    def calibrate(self, then_record: bool = False) -> None:
+        if self.mode == "loop" or self.recorder.state != State.IDLE:
+            self.notify("Cut back to LIVE (and finish any recording) before calibrating.")
+            return
+        self.calibrator = Calibrator()
+        self._record_after_calibration = then_record
+
+    def cancel(self) -> None:
+        if self.calibrator is not None:
+            self.calibrator = None
+            self.notify("Calibration cancelled.")
+        else:
+            self.recorder.cancel()
+
+    def _update_calibration(self, live: np.ndarray) -> None:
+        cal = self.calibrator
+        cal.add(live)
+        if not cal.done():
+            return
+        self.calibrator = None
+        bg = cal.background()
+        if bg is None or cal.coverage < 0.6:
+            self.notify("Calibration didn't see enough of the room - try again "
+                        "(keep your face visible while you lean).", 10)
+            return
+        cv2.imwrite(background_file(self.camera_name), bg)
+        self.background = bg
+        self.recorder.background = bg
+        if self.player is not None and self.player.first_frame is not None:
+            self._make_loop_matcher()
+        self.notify(f"Silhouette calibrated ({int(cal.coverage * 100)}% of the room seen).", 6)
+        log.info("Calibrated background, coverage %.2f", cal.coverage)
+        if self._record_after_calibration:
+            self.recorder.start()
+
+    def check_for_updates(self) -> None:
+        """Manual check. Runs in the background; never blocks the camera."""
+        if self._updating:
+            return
+        if not updater.can_self_update():
+            self.notify("Updates are available in the installed app only.")
+            return
+        self._updating = True
+        self.notify("Checking for updates...", 30)
+
+        def work():
+            try:
+                rel = updater.check(self.cfg.update_repo, self.cfg.update_token)
+                if rel is None:
+                    self.notify(f"You're up to date (v{updater.current_version()}).")
+                    return
+                self.notify(f"Downloading v{rel.version}...", 600)
+                path = updater.download(rel, self.cfg.update_token,
+                                        lambda p: self.notify(f"Downloading v{rel.version}... {int(p * 100)}%", 600))
+                self._pending_update = path
+                self.request("apply_update")
+            except updater.UpdateError as e:
+                self.notify(f"Update check failed: {e}", 8)
+            finally:
+                self._updating = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _handle_actions(self) -> bool:
+        """Run queued actions on the engine thread. False = quit."""
+        while not self._actions.empty():
+            a = self._actions.get_nowait()
+            arg = a.split(":", 1)[1] if ":" in a else ""
+            if a == "toggle":
+                self.toggle()
+            elif a == "cut_press":
+                self.press_cut()
+            elif a == "cut_release":
+                self.release_cut()
+            elif a == "record":
+                self.record()
+            elif a == "calibrate":
+                self.calibrate()
+            elif a == "cancel":
+                self.cancel()
+            elif a == "end_recording":
+                self.recorder.end_now()
+            elif a == "glitch":
+                self.toggle_glitch()
+            elif a.startswith("camera:"):
+                self.switch_camera(arg or None)
+            elif a.startswith("use_loop:"):
+                self.use_loop(arg)
+            elif a.startswith("delete_loop:"):
+                self.delete_loop(arg)
+            elif a == "library_changed":
+                self.library_version += 1
+            elif a == "mic_setting":
+                self._apply_mic()
+            elif a == "install_driver":
+                self.install_driver()
+            elif a == "uninstall_driver":
+                self.uninstall_driver()
+            elif a == "driver_installed":
+                self.output.reconnect()
+                self.notify("Doppleganger camera installed - choose \"Doppleganger\" as your camera in Zoom.", 10)
+            elif a == "output_reconnect":
+                self.output.reconnect()
+            elif a == "update":
+                self.check_for_updates()
+            elif a == "quit":
+                return False
+            elif a == "apply_update" and self._pending_update:
+                if self.recorder.state != State.IDLE or self.mode == "loop":
+                    self.notify("Update downloaded - it installs when you're LIVE and not recording.", 10)
+                    threading.Timer(3.0, self.request, ("apply_update",)).start()
+                    continue
+                self.close()
+                updater.apply_and_restart(self._pending_update)
+        return True
+
+    # ---------- main loop (engine thread) ----------
+    def run(self) -> None:
+        self.running = True
+        frame_dt = 1.0 / self.cfg.fps
+        next_t = time.monotonic()
+        live = None
+        while live is None and self.running:
+            live = self.camera.latest()
+            time.sleep(0.01)
+        try:
+            while self.running:
+                fresh = self.camera.latest()
+                if fresh is not None:
+                    live = fresh
+                if self.calibrator is not None:
+                    self._update_calibration(live)
+                self.recorder.update(live)
+                if self.recorder.result_path:
+                    self._load_loop(self.recorder.result_path)
+                    self.recorder.result_path = None
+                if self.recorder.message and self.recorder.state == State.IDLE:
+                    self.notify(self.recorder.message)
+                    self.recorder.message = ""
+
+                # Once activated, the loop advances every frame whether or not it's on air.
+                loop_frame = self.player.next_frame() if (self.loop_running and self.player) else None
+                out = self.glitch.process(self._compose(live, loop_frame), time.monotonic())
+                self.output.send(out)
+
+                self._update_sync(live, loop_frame, out)
+                if self.cut.tick(time.monotonic(), self.sync) == "cut":
+                    self.toggle()
+                now = time.monotonic()
+                if now - self._light_at > 1.0:
+                    self.live_light, self._light_at = library.lighting_of(live), now
+                self.preview_rgb = self.render_preview(out, live, loop_frame)
+
+                if not self._handle_actions():
+                    break
+                next_t += frame_dt
+                delay = next_t - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                else:
+                    next_t = time.monotonic()
+        finally:
+            self.close()
+            if self.on_quit:
+                self.on_quit()
+
+    def stop(self) -> None:
+        self.request("quit")
+
+    def _compose(self, live: np.ndarray, loop_frame: np.ndarray | None) -> np.ndarray:
+        cur = loop_frame if (self.mode == "loop" and loop_frame is not None) else live
+        if self.fade_from and self.cfg.crossfade_ms > 0:
+            t = (time.monotonic() - self.fade_start) * 1000 / self.cfg.crossfade_ms
+            if t >= 1:
+                self.fade_from = None
+            else:
+                prev = live if self.fade_from == "live" else loop_frame
+                if prev is not None:
+                    return cv2.addWeighted(prev, 1 - t, cur, t, 0)
+        return cur
+
+    def _update_sync(self, live, loop_frame, out) -> None:
+        """How seamless would a cut be right now? (drives the overlay, the meter, and hold-to-sync)"""
+        if self.glitch.active:
+            target = out                      # ending the glitch / cutting reveals live here
+        elif self.loop_running and loop_frame is not None:
+            target = loop_frame
+        elif self.mode == "live" and self.loop_matcher is not None:
+            self.sync = self.loop_matcher.update(live)  # first cut: the loop's start pose
+            return
+        else:
+            self.sync = 0.0
+            return
+        weight = self.loop_sil.weight_small if self.loop_sil is not None else None
+        diff = guides.frame_diff(guides.small_gray(live), guides.small_gray(target), weight)
+        self.sync = 0.7 * self.sync + 0.3 * max(0.0, 1.0 - diff / 35.0)
+
+    @property
+    def lighting_warning(self) -> str | None:
+        return library.lighting_warning(self.loop_light, self.live_light)
+
+    # ---------- preview (drawn at the window's size, RGB for the window) ----------
+    def _draw_offair_overlay(self, prev: np.ndarray, ghost_src: np.ndarray, label: str,
+                             text_y: int = 34) -> np.ndarray:
+        """Ghost `ghost_src` (the feed you'd cut to) over the preview of what's on air."""
+        cfg = self.cfg
+        ghost = cv2.flip(ghost_src, 1) if cfg.mirror_preview else ghost_src
+        ghost = cv2.resize(ghost, (prev.shape[1], prev.shape[0]), interpolation=cv2.INTER_AREA)
+        prev = cv2.addWeighted(prev, 1 - cfg.overlay_opacity, ghost, cfg.overlay_opacity, 0)
+        h, w = prev.shape[:2]
+        if self.sync >= SYNC_THRESHOLD:
+            cv2.rectangle(prev, (3, 3), (w - 4, h - 4), brand.CV_AQUA, 6)
+            guides.put_text(prev, "In sync - cut is seamless", (12, text_y), 0.7, brand.CV_AQUA)
+        else:
+            guides.put_text(prev, f"Faded: {label}", (12, text_y), 0.55)
+        return prev
+
+    def _draw_calibration(self, prev: np.ndarray) -> None:
+        cal = self.calibrator
+        h, w = prev.shape[:2]
+        mirrored = self.cfg.mirror_preview
+        if cal.seen is not None:  # tint the parts of the room not seen yet
+            unseen = (~cal.seen).astype(np.uint8) * 255
+            unseen = cv2.resize(cv2.flip(unseen, 1) if mirrored else unseen, (w, h), interpolation=cv2.INTER_LINEAR)
+            a = cv2.GaussianBlur(unseen, (0, 0), 3).astype(np.float32)[..., None] / 255.0 * 0.45
+            prev[:] = (prev * (1 - a) + np.array([40, 40, 200], np.float32) * a).astype(np.uint8)
+        need = cal.side_needed()
+        if need is None:
+            guides.banner(prev, "Got it - come back to the center", brand.CV_AQUA_DARK)
+        else:
+            # The uncovered side shows on the opposite side in a mirrored preview.
+            screen_side = ({"left": "right", "right": "left"}[need]) if mirrored else need
+            move = "LEFT" if screen_side == "right" else "RIGHT"
+            guides.banner(prev, f"Calibrating - lean or step slowly to your {move}", brand.CV_VIOLET)
+        guides.put_text(prev, "Keep facing the camera. Red areas haven't been seen yet.", (20, h - 70), 0.5)
+        guides.draw_meter(prev, f"Room seen {int(cal.coverage * 100)}%", cal.coverage / cal.target, h - 45)
+        if not cal.face_visible:
+            guides.put_text(prev, "Can't see your face - turn toward the camera", (20, h - 95), 0.6, brand.CV_DANGER)
+
+    def _draw_glitch_banner(self, prev: np.ndarray) -> None:
+        if self.glitch.recovering:
+            guides.banner(prev, "Connection 'recovering'...", brand.CV_AQUA_DARK)
+        elif self.mode == "loop":
+            guides.banner(prev, "Glitching - line up with the frozen picture, then cut to live", brand.CV_AMBER)
+        else:
+            guides.banner(prev, "Glitching - line up with the frozen picture, then end the glitch", brand.CV_AMBER)
+
+    def render_preview(self, out: np.ndarray, live: np.ndarray, loop_frame: np.ndarray | None) -> np.ndarray:
+        cfg = self.cfg
+        recording = self.recorder.state in (State.COUNTDOWN, State.RECORDING)
+        glitching = self.glitch.active
+        base = live if (recording or self.calibrator is not None) else out
+        prev = cv2.flip(base, 1) if cfg.mirror_preview else base
+        w, h = self.preview_size
+        prev = cv2.resize(prev, (max(2, w), max(2, h)), interpolation=cv2.INTER_AREA)
+        if self.calibrator is not None:
+            self._draw_calibration(prev)
+        elif recording or self.recorder.state == State.PROCESSING:
+            prev = self.recorder.draw(prev, cfg.mirror_preview)
+        elif glitching:
+            # Same overlay as always: your live camera see-through over the frozen picture Zoom sees.
+            prev = self._draw_offair_overlay(prev, live, "live camera", text_y=125)
+            self._draw_glitch_banner(prev)
+        elif cfg.show_guides and self.loop_running and loop_frame is not None:
+            other = live if self.mode == "loop" else loop_frame
+            prev = self._draw_offair_overlay(prev, other, "live camera" if self.mode == "loop" else "loop")
+        elif cfg.show_guides and self.mode == "live" and self.loop_matcher is not None:
+            # Before the first cut: line up with the loop's start pose.
+            glow = glow_amount(self.sync)
+            if self.loop_sil is not None:
+                self.loop_sil.draw(prev, cfg.mirror_preview, glow)
+            if glow >= 0.99:
+                guides.put_text(prev, "In start pose - cut is seamless", (12, 34), 0.7, brand.CV_AQUA)
+        if self.cut.waiting:
+            guides.banner(prev, f"Hold to sync - cutting when in sync ({int(self.sync * 100)}%)", brand.CV_VIOLET)
+        return cv2.cvtColor(prev, cv2.COLOR_BGR2RGB)
+
+    def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        self.running = False
+        self.mic.restore()
+        self.mic.flush()
+        if getattr(self, "_hk", None):
+            self._hk.stop()
+        if getattr(self, "_tray", None):
+            self._tray.stop()
+        self.camera.close()
+        self.output.close()
+        if self.player:
+            self.player.close()
+
+
+def _ask_yes_no(title: str, text: str) -> bool:
+    try:
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(None, text, title, 0x04 | 0x20 | 0x40000) == 6  # YES
+    except Exception:  # noqa: BLE001 - not on Windows
+        return False
