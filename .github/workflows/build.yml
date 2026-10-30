@@ -17,6 +17,8 @@ permissions:
   contents: write
 
 env:
+  # Build numbers continue from the old "Build Windows app" workflow (last release v0.1.15).
+  BUILD_OFFSET: 15
   SIGN_PFX: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
   SIGN_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
 
@@ -43,7 +45,7 @@ jobs:
         shell: bash
         run: |
           base=$(python -c "import re;print('.'.join(re.search(r'\"(\d+)\.(\d+)', open('doppleganger/__init__.py').read()).groups()))")
-          v="$base.${{ github.run_number }}"
+          v="$base.$(( ${{ github.run_number }} + BUILD_OFFSET ))"
           echo "VERSION = \"$v\"" > doppleganger/_build.py
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
@@ -150,7 +152,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14        # Apple Silicon
+          - runner: macos-15        # Apple Silicon
             arch: arm64
           - runner: macos-15-intel  # Intel
             arch: x86_64
@@ -177,7 +179,7 @@ jobs:
         id: ver
         run: |
           base=$(python -c "import re;print('.'.join(re.search(r'\"(\d+)\.(\d+)', open('doppleganger/__init__.py').read()).groups()))")
-          v="$base.${{ github.run_number }}"
+          v="$base.$(( ${{ github.run_number }} + BUILD_OFFSET ))"
           echo "VERSION = \"$v\"" > doppleganger/_build.py
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
@@ -223,7 +225,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           base=$(python3 -c "import re;print('.'.join(re.search(r'\"(\d+)\.(\d+)', open('doppleganger/__init__.py').read()).groups()))")
-          v="$base.${{ github.run_number }}"
+          v="$base.$(( ${{ github.run_number }} + BUILD_OFFSET ))"
           files=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) | sort)
           echo "$files"
           mac=""
