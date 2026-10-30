@@ -152,6 +152,14 @@
         if (!have[a.getAttribute("data-asset")]) { a.classList.add("missing"); a.title = "Coming soon"; }
       });
       var main = btn.href.split("/").pop();
+      if (main === "Doppleganger-mac-arm64.dmg" && !have[main] && have["Doppleganger-mac-x86_64.dmg"]) {
+        // No Apple Silicon build in this release yet: the Intel build runs on M-series Macs via Rosetta.
+        btn.href = BASE + "Doppleganger-mac-x86_64.dmg";
+        btn.innerHTML = "Download for Mac <small>Intel build, runs on Apple Silicon</small>";
+        note.innerHTML = "The native Apple Silicon build is on its way. This one works on every Mac; "
+          + "if macOS offers to install Rosetta, click Install.";
+        main = "Doppleganger-mac-x86_64.dmg";
+      }
       if (btn.style.display !== "none" && !have[main]) {
         btn.classList.add("missing");
         note.textContent = "This download isn't in the latest release yet - check back shortly.";
