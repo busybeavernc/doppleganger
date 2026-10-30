@@ -10,7 +10,8 @@ from doppleganger import updater
 
 def _fake_release(tag):
     body = json.dumps({"tag_name": tag, "body": "", "assets": [
-        {"name": "Doppleganger.exe", "url": "API_URL", "browser_download_url": "PUBLIC_URL"}]}).encode()
+        {"name": n, "url": "API_URL", "browser_download_url": "PUBLIC_URL"}
+        for n in ("Doppleganger.exe", "Doppleganger-mac-arm64.zip", "Doppleganger-mac-x86_64.zip")]}).encode()
 
     class Resp(io.BytesIO):
         def __enter__(self):
@@ -60,3 +61,20 @@ def test_relaunch_environment_drops_pyinstaller_markers():
     assert env["PATH"] == "C:\\Windows"
     assert not any(k.startswith("_PYI") or k == "_MEIPASS2" for k in env)
     assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+
+
+def test_mac_asset_name_and_update_script(tmp_path):
+    with mock.patch.object(updater.sys, "platform", "darwin"), \
+         mock.patch.object(updater, "mac_arch", return_value="arm64"):
+        assert updater.asset_name() == "Doppleganger-mac-arm64.zip"
+    s = updater.mac_update_script("/tmp/new.zip", "/Applications/Doppleganger.app", 123)
+    assert "kill -0 123" in s and "ditto -x -k '/tmp/new.zip'" in s
+    assert "open '/Applications/Doppleganger.app'" in s
+    # an apostrophe in a path is quoted safely
+    s = updater.mac_update_script("/tmp/it's.zip", "/Applications/Doppleganger.app", 1)
+    assert "'/tmp/it'\\''s.zip'" in s
+    # the script is valid sh
+    p = tmp_path / "u.sh"
+    p.write_text(s)
+    import subprocess
+    assert subprocess.run(["sh", "-n", str(p)]).returncode == 0

@@ -1,6 +1,6 @@
 <p align="center"><img src="doppleganger/assets/logo_dark.png" alt="Doppleganger — A seamless switch." width="420"></p>
 
-**Doppleganger** records a short, seamless loop of you, then lets you switch between that loop and your live webcam in Zoom, Teams or any browser meeting — without anyone noticing. Windows 10/11.
+**Doppleganger** records a short, seamless loop of you, then lets you switch between that loop and your live webcam in Zoom, Teams or any browser meeting — without anyone noticing. Windows 10/11 and macOS 12+.
 
 ## Install
 
@@ -14,6 +14,19 @@
 You can reopen the guide any time from the *Setup guide* button. OBS Studio is not needed.
 
 Your loops and settings live in `%APPDATA%\Doppleganger` and are kept if you uninstall. A copy run from its own folder that already contains `config.json` or `loops\` (as earlier versions did) keeps using that folder.
+
+### Mac
+1. Download the Mac disk image from the [latest release](https://github.com/busybeavernc/doppleganger/releases/latest): **Doppleganger-mac-arm64.dmg** for Apple Silicon (M1 or newer) or **Doppleganger-mac-x86_64.dmg** for Intel Macs. Open it and drag **Doppleganger** onto **Applications**.
+2. The first time, **right-click Doppleganger → Open** (the app isn't notarized by Apple yet). On macOS 15 or later, if there's no Open option, go to *System Settings → Privacy & Security* and click **Open Anyway**.
+3. Allow the **camera** when macOS asks.
+4. **OBS Studio is needed on a Mac.** Doppleganger sends your picture through the free OBS Virtual Camera, because a Mac camera driver of our own needs a paid Apple developer certificate. The setup guide checks whether OBS and its camera are installed. If they aren't, it has a **Download OBS Studio** button ([obsproject.com/download](https://obsproject.com/download)) and walks you through the one-time steps:
+   1. Install OBS Studio 30 or newer.
+   2. Open OBS, click **Start Virtual Camera**, and allow the camera extension in *System Settings → General → Login Items & Extensions → Camera Extensions*.
+   3. Click **Stop Virtual Camera** and quit OBS. You don't need to open it again.
+5. In Zoom, Teams or Meet, choose **OBS Virtual Camera**. Keep OBS's own virtual camera stopped while Doppleganger is running.
+6. For the hotkeys to work while Zoom is in front, allow Doppleganger in *System Settings → Privacy & Security → Input Monitoring*. Settings has a button that opens this page. On most Mac keyboards, press **fn+F9** and **fn+F10**.
+
+On a Mac, the microphone is silenced by setting the input volume to 0 while the LOOP is on air, then setting it back. Loops and settings live in `~/Library/Application Support/Doppleganger`. Updates install themselves the same way as on Windows, as long as Doppleganger runs from *Applications* and not from the disk image. Hiding from screen sharing uses macOS's "don't share this window" setting; some recent screen-capture methods may still show the window.
 
 ### Updates
 Each time it opens, Doppleganger checks the releases. If there's a newer version, it shows an "Updating…" window, swaps itself out and reopens. *Settings → Updates → Check now* checks manually. An update never interrupts you while the LOOP is on air or a recording is running.
@@ -60,6 +73,16 @@ Doppleganger uses **AI person detection** (Google's MediaPipe selfie segmentatio
 *Settings → Calibrate room* is still there as an optional fallback, and is used automatically only if the AI model can't run on a PC. Lean or step slowly to the side the banner asks for while it learns what the empty room looks like.
 
 ## Recording a loop
+
+When you press **Record** (button, **R** or the tray menu), a short *Before you record* card lists what to expect first:
+- Sit the way you will in the meeting.
+- Hold still for the first 10 seconds.
+- Keep movement subtle and natural: blink, breathe, nod slightly, glance at your screen.
+- Avoid anything memorable, like big laughs, waves, touching your face or drinking. The loop repeats, so a distinctive moment gets noticed the second time.
+- Come back to the start pose for the last 10 seconds.
+- Keep the room the same.
+
+Press **Start recording** (or **R** again) to begin. You can turn the card off with *Don't show this again* or in Settings. While a new loop is being stitched, a small progress window appears and cuts are paused for a moment.
 
 | Time (default 90 s) | What you'll see | What to do |
 |---|---|---|

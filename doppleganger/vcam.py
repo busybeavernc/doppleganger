@@ -175,7 +175,10 @@ class DopplegangerCamera:
 # ---------- real cameras ----------
 
 def list_cameras() -> list[tuple[int, str]]:
-    """(index, name) of video devices in OpenCV CAP_DSHOW order. Empty if unknown."""
+    """(index, name) of video devices in the order OpenCV opens them. Empty if unknown."""
+    if sys.platform == "darwin":
+        from . import macos
+        return macos.list_cameras()
     if not is_windows():
         return []
     exe = os.path.join(bundle_dir(), "listcams.exe")

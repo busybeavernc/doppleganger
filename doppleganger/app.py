@@ -21,7 +21,11 @@ def main() -> None:
     ap.add_argument("--no-vcam", action="store_true", help="preview only, no virtual camera")
     ap.add_argument("--remove-camera", action="store_true", help="remove the Doppleganger camera and exit")
     ap.add_argument("--minimized", action="store_true", help="start minimized (used when starting with Windows)")
-    args = ap.parse_args()
+    ap.add_argument("--selftest", action="store_true", help="check the packaged app's parts load, then exit")
+    args, _unknown = ap.parse_known_args()  # macOS may add its own arguments (e.g. -psn_...)
+    if args.selftest:
+        rc = selftest()
+        os._exit(rc)  # skip interpreter teardown (MediaPipe complains noisily during it)
 
     logging.basicConfig(filename="doppleganger.log", filemode="w", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
@@ -43,6 +47,15 @@ def main() -> None:
     if cfg.auto_update and updater.can_self_update():
         startup_update(cfg)
 
+    import sys
+    if sys.platform == "darwin":
+        from . import macos
+        os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")  # we ask ourselves, on the main thread
+        if macos.ensure_camera_access() is False:
+            macos.open_camera_privacy_settings()
+            raise RuntimeError("Doppleganger isn't allowed to use the camera. Turn it on in System Settings > "
+                               "Privacy & Security > Camera, then open Doppleganger again.")
+
     engine = Engine(cfg, vcam=not args.no_vcam, config_path=args.config)
     if not args.no_vcam and vcamlib.needs_install() and vcamlib.installed_version() is not None:
         engine.install_driver(ask=False)  # this version ships a newer camera driver
@@ -53,6 +66,50 @@ def main() -> None:
     logging.shutdown()
     # Everything is saved and released by now; don't let a stray tray/hotkey thread keep us alive.
     os._exit(0)
+
+
+def selftest() -> int:
+    """Used by the build: prove the bundle contains everything (Tk, OpenCV, AI model, virtual camera)."""
+    import sys
+    problems = []
+
+    def check(name, fn):
+        try:
+            print(f"{name}: {fn()}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            problems.append(name)
+            print(f"{name}: FAILED {e!r}", flush=True)
+
+    import numpy as np
+    check("version", updater.current_version)
+    check("opencv", lambda: __import__("cv2").__version__)
+    check("pillow-text", lambda: __import__("doppleganger.guides", fromlist=["x"])._font(20, True).getname())
+
+    def seg():
+        from . import segment
+        s = segment.get()
+        if s is None:
+            return "unavailable (room calibration fallback)"
+        p = s.probability(np.zeros((360, 640, 3), np.uint8))
+        return f"ok {p.shape}"
+    check("ai-segmentation", seg)
+    check("pyvirtualcam", lambda: __import__("pyvirtualcam").__version__)
+    check("cameras", lambda: vcamlib.list_cameras())
+
+    def tk():
+        import tkinter
+        r = tkinter.Tk()
+        v = r.tk.call("info", "patchlevel")
+        r.destroy()
+        return f"Tk {v}"
+    check("tk", tk)
+    if sys.platform == "darwin":
+        from . import macos
+        check("obs", macos.obs_status)
+        check("hotkeys-module", lambda: __import__("Quartz") and "Quartz ok")
+        check("avfoundation", lambda: __import__("AVFoundation") and "ok")
+    print("SELFTEST", "FAILED: " + ", ".join(problems) if problems else "OK", flush=True)
+    return 1 if problems else 0
 
 
 def startup_update(cfg: Config) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 
@@ -12,11 +13,19 @@ import numpy as np
 class Camera:
     def __init__(self, index: int, width: int, height: int, fps: int):
         self.width, self.height = width, height
-        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+        if os.name == "nt":
+            backend = cv2.CAP_DSHOW
+        elif sys.platform == "darwin":
+            backend = cv2.CAP_AVFOUNDATION
+        else:
+            backend = cv2.CAP_ANY
         self.cap = cv2.VideoCapture(index, backend)
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open webcam #{index}. Is another app using it?")
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            hint = (" On a Mac, allow Doppleganger in System Settings > Privacy & Security > Camera."
+                    if sys.platform == "darwin" else " Is another app using it?")
+            raise RuntimeError(f"Could not open webcam #{index}.{hint}")
+        if os.name == "nt":
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)

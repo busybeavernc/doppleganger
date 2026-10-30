@@ -1,4 +1,4 @@
-"""Windows-only helpers. Everything is a no-op elsewhere."""
+"""Platform helpers: hide from screen sharing, start at sign-in. Windows here; Mac via macos.py."""
 from __future__ import annotations
 
 import logging
@@ -16,8 +16,11 @@ RUN_NAME = "Doppleganger"
 
 
 def startup_command() -> str | None:
-    """Command Windows runs at sign-in (installed .exe only)."""
+    """Command Windows runs at sign-in (installed .exe only). On a Mac: the .app (a LaunchAgent opens it)."""
     import sys
+    if sys.platform == "darwin":
+        from . import macos
+        return macos.app_bundle()
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return None
     return f'"{sys.executable}" --minimized'
@@ -25,6 +28,10 @@ def startup_command() -> str | None:
 
 def set_start_with_windows(enabled: bool) -> bool:
     """Start Doppleganger (minimized) when you sign in to Windows, so the camera always has a picture."""
+    import sys
+    if sys.platform == "darwin":
+        from . import macos
+        return macos.set_start_at_login(enabled)
     cmd = startup_command()
     if cmd is None:
         return False
@@ -41,6 +48,10 @@ def set_start_with_windows(enabled: bool) -> bool:
 
 
 def starts_with_windows() -> bool:
+    import sys
+    if sys.platform == "darwin":
+        from . import macos
+        return macos.starts_at_login()
     if os.name != "nt":
         return False
     import winreg
@@ -63,6 +74,14 @@ def toplevel_hwnd(widget) -> int | None:
 def hide_from_capture(widget, hide: bool = True) -> bool:
     """Exclude a window from screen sharing / screenshots (you still see it; viewers don't).
     Returns True if Windows accepted it."""
+    import sys
+    if sys.platform == "darwin":
+        from . import macos
+        try:
+            widget.update_idletasks()
+        except Exception:  # noqa: BLE001
+            pass
+        return macos.hide_all_windows_from_capture(hide)
     hwnd = toplevel_hwnd(widget)
     if not hwnd:
         return False

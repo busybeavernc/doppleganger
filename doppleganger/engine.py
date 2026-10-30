@@ -26,6 +26,7 @@ from .outline import OutlineTracer
 from .player import LoopPlayer, latest_loop
 from .recorder import Recorder, State
 from .silhouette import Silhouette, glow_amount
+from . import macos
 from .tray import start_tray
 from . import brand
 
@@ -116,6 +117,13 @@ class Output:
 
 def _explain_vcam_error(backend: str, msg: str) -> str:
     m = msg.lower()
+    if macos.is_mac():
+        st = macos.obs_status()
+        if not st["ready"] or "not installed" in m:
+            return st["message"]
+        if "stream" in m or "multiple" in m or "in use" in m:
+            return "OBS Virtual Camera is busy - in OBS click 'Stop Virtual Camera' (or quit OBS)"
+        return f"OBS Virtual Camera not connected: {msg}"
     if backend == "doppleganger":
         if "already in use" in m:
             return "The Doppleganger camera is in use by another copy of this app - close it"
@@ -190,7 +198,8 @@ class Engine:
         if path:
             self._load_loop(path, announce=False)
         self._start_global_hotkeys()
-        self._tray = start_tray(self.request, updater.current_version(), self)
+        # Mac: no tray icon (pystray needs the main thread, which Tk owns); the Dock icon and window do the job.
+        self._tray = None if macos.is_mac() else start_tray(self.request, updater.current_version(), self)
 
     # ---------- requests from other threads ----------
     def request(self, action: str) -> None:
@@ -349,10 +358,12 @@ class Engine:
 
     def _start_global_hotkeys(self) -> None:
         try:
-            self._hk = GlobalHotkeys({
+            bindings = {
                 self.cfg.hotkey: (lambda: self.request("cut_press"), lambda: self.request("cut_release")),
                 self.cfg.glitch_hotkey: (lambda: self.request("glitch"), None),
-            })
+            }
+            # Mac: a Quartz event tap (pynput's listener can crash next to Tk on recent macOS).
+            self._hk = macos.MacHotkeys(bindings) if macos.is_mac() else GlobalHotkeys(bindings)
             self._hk.start()
         except Exception as e:  # noqa: BLE001
             self._hk = None

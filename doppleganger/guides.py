@@ -135,8 +135,9 @@ class PoseMatcher:
 
 # ---------- antialiased drawing (TrueType text, smooth rounded shapes) ----------
 
-_FONTS = {False: ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"),
-          True: ("seguisb.ttf", "segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf")}
+_FONTS = {False: ("segoeui.ttf", "arial.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf", "DejaVuSans.ttf"),
+          True: ("seguisb.ttf", "segoeuib.ttf", "arialbd.ttf",
+                 "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "DejaVuSans-Bold.ttf")}
 
 
 @lru_cache(maxsize=16)

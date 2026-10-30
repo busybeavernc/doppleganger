@@ -2,6 +2,9 @@ opencv-contrib-python>=4.8,<5   # one OpenCV build for us and MediaPipe (contrib
 mediapipe>=0.10.14              # AI person segmentation
 numpy>=1.24
 pyvirtualcam>=0.12
-pynput>=1.7
-pystray>=0.19
+pynput>=1.7; sys_platform != "darwin"      # global hotkeys (Mac uses a Quartz event tap instead)
+pystray>=0.19; sys_platform != "darwin"    # tray icon (Mac: Dock icon)
+pyobjc-framework-Quartz>=10; sys_platform == "darwin"       # Mac: global hotkeys
+pyobjc-framework-AVFoundation>=10; sys_platform == "darwin" # Mac: webcam names
+pyobjc-framework-Cocoa>=10; sys_platform == "darwin"        # Mac: hide windows from screen sharing
 Pillow>=10

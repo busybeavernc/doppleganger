@@ -1,4 +1,6 @@
-"""Silence while the LOOP is on air: mute the PC's microphones at the Windows level.
+"""Silence while the LOOP is on air: mute the PC's microphones at the system level.
+
+(Mac: the system input volume goes to 0 and back to what it was.)
 
 Muting happens through micmute.exe (built on CI). Only microphones that were
 *unmuted* get muted, and exactly those are restored - so a mic you'd muted
@@ -12,6 +14,7 @@ import logging
 import os
 import queue
 import subprocess
+import sys
 import threading
 
 from . import vcam
@@ -32,7 +35,7 @@ class MicMuter:
 
     @staticmethod
     def available() -> bool:
-        return os.path.exists(_helper_path())
+        return sys.platform == "darwin" or os.path.exists(_helper_path())
 
     # ---------- public (non-blocking) ----------
     def mute(self) -> None:
@@ -102,6 +105,9 @@ def _helper_path() -> str:
 
 
 def _run_helper(args: list[str]) -> str:
+    if sys.platform == "darwin":  # Mac: input volume to 0 and back (see macos.mic_runner)
+        from . import macos
+        return macos.mic_runner(args)
     exe = _helper_path()
     if not os.path.exists(exe):
         return ""

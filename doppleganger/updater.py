@@ -1,9 +1,9 @@
-"""Self-update from GitHub Releases (packaged Windows .exe only).
+"""Self-update from GitHub Releases (packaged app only).
 
-Each build on GitHub publishes a release tagged vX.Y.N with Doppleganger.exe attached.
-The app compares that tag with its own version; to update it downloads the new
-.exe next to itself, then a tiny batch script swaps the files once the app has
-exited and starts the new version.
+Each build on GitHub publishes a release tagged vX.Y.N with Doppleganger.exe (Windows)
+and Doppleganger-mac-<arm64|x86_64>.zip (Mac) attached. The app compares that tag with
+its own version; to update it downloads the new build, then a tiny script swaps it in
+once the app has exited and starts the new version.
 """
 from __future__ import annotations
 
@@ -23,6 +23,18 @@ from . import __version__
 ASSET_NAME = "Doppleganger.exe"
 
 
+def mac_arch() -> str:
+    import platform
+    return "arm64" if platform.machine() == "arm64" else "x86_64"
+
+
+def asset_name() -> str:
+    """The release file this copy of Doppleganger updates itself from."""
+    if sys.platform == "darwin":
+        return f"Doppleganger-mac-{mac_arch()}.zip"
+    return ASSET_NAME
+
+
 def current_version() -> str:
     try:
         from ._build import VERSION  # written by the GitHub build
@@ -36,7 +48,14 @@ def parse_version(v: str) -> tuple[int, ...]:
 
 
 def can_self_update() -> bool:
-    return bool(getattr(sys, "frozen", False)) and os.name == "nt"
+    if not getattr(sys, "frozen", False):
+        return False
+    if sys.platform == "darwin":
+        from . import macos
+        app = macos.app_bundle()
+        # Running straight from the downloaded disk image (read-only) or a folder we can't write: no.
+        return bool(app) and os.access(os.path.dirname(app), os.W_OK) and not app.startswith("/Volumes/")
+    return os.name == "nt"
 
 
 @dataclass
@@ -71,7 +90,7 @@ def check(repo: str, token: str = "", timeout: float = 5.0) -> Release | None:
         raise UpdateError("Couldn't reach GitHub") from e
 
     tag = data.get("tag_name", "")
-    asset = next((a for a in data.get("assets", []) if a.get("name") == ASSET_NAME), None)
+    asset = next((a for a in data.get("assets", []) if a.get("name") == asset_name()), None)
     if asset is None or parse_version(tag) <= parse_version(current_version()):
         return None
     # Private repos need the API asset URL (works with a token); public can use the plain link.
@@ -81,8 +100,11 @@ def check(repo: str, token: str = "", timeout: float = 5.0) -> Release | None:
 
 def download(release: Release, token: str = "",
              progress: Callable[[float], None] | None = None) -> str:
-    """Download the new .exe next to the running one. Returns its path."""
-    dest = os.path.join(os.path.dirname(sys.executable), ASSET_NAME + ".new")
+    """Download the new build (Windows: next to the running .exe; Mac: a temporary zip). Returns its path."""
+    if sys.platform == "darwin":
+        dest = os.path.join(tempfile.gettempdir(), asset_name())
+    else:
+        dest = os.path.join(os.path.dirname(sys.executable), ASSET_NAME + ".new")
     req = _request(release.download_url, token, accept="application/octet-stream")
     try:
         with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as f:
@@ -103,8 +125,33 @@ def download(release: Release, token: str = "",
     return dest
 
 
+def mac_update_script(zip_path: str, app: str, pid: int) -> str:
+    """Shell script: wait for us to quit, unpack the new Doppleganger.app over the old one, reopen it."""
+    q = lambda p: "'" + p.replace("'", "'\\''") + "'"  # noqa: E731 - shell quoting
+    return f"""#!/bin/sh
+while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+tmp=$(mktemp -d)
+if ditto -x -k {q(zip_path)} "$tmp" && [ -d "$tmp/Doppleganger.app" ]; then
+  rm -rf {q(app)}.old
+  mv {q(app)} {q(app)}.old && ditto "$tmp/Doppleganger.app" {q(app)} && rm -rf {q(app)}.old || mv {q(app)}.old {q(app)}
+fi
+xattr -dr com.apple.quarantine {q(app)} 2>/dev/null
+rm -rf "$tmp" {q(zip_path)}
+open {q(app)}
+rm -f "$0"
+"""
+
+
 def apply_and_restart(new_exe: str) -> None:
-    """Swap in the new .exe after this process exits, relaunch it, and exit now."""
+    """Swap in the new build after this process exits, relaunch it, and exit now."""
+    if sys.platform == "darwin":
+        from . import macos
+        script = os.path.join(tempfile.gettempdir(), "doppleganger_update.sh")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(mac_update_script(new_exe, macos.app_bundle(), os.getpid()))
+        os.chmod(script, 0o755)
+        subprocess.Popen(["/bin/sh", script], start_new_session=True, close_fds=True, env=clean_environment())
+        os._exit(0)
     exe = sys.executable
     script = os.path.join(tempfile.gettempdir(), "doppleganger_update.bat")
     with open(script, "w", encoding="utf-8") as f:

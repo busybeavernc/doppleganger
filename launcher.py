@@ -1,15 +1,22 @@
-"""Entry point for the packaged Doppleganger.exe (and `python launcher.py`)."""
+"""Entry point for the packaged app (Doppleganger.exe / Doppleganger.app) and `python launcher.py`."""
 import os
 import sys
 import traceback
 
 
 def _error_box(msg: str) -> None:
+    print(msg, file=sys.stderr)
     try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg, "Doppleganger", 0x10)
-    except Exception:  # noqa: BLE001 - not on Windows
-        print(msg, file=sys.stderr)
+        if sys.platform == "darwin":
+            import subprocess
+            text = msg.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(["osascript", "-e", f'display alert "Doppleganger" message "{text}" as critical'],
+                           timeout=600)
+        else:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, msg, "Doppleganger", 0x10)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 if __name__ == "__main__":

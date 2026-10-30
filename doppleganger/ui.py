@@ -7,6 +7,7 @@ engine runs on its own thread; the window only reads its state and sends it requ
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -14,12 +15,14 @@ from tkinter import messagebox, simpledialog, ttk
 import cv2
 from PIL import Image, ImageTk
 
-from . import brand, library, updater, winutil
+from . import brand, library, macos, updater, winutil
 from .brand import AMBER, AQUA, BORDER, CLOUD, DANGER, MIDNIGHT, MUTED, SURFACE, SURFACE_HI, VIOLET, VIOLET_DARK
 from .cutcontrol import SYNC_THRESHOLD
 from .recorder import State
 
-FONT = "Segoe UI" if os.name == "nt" else "Inter"
+IS_MAC = sys.platform == "darwin"
+FONT = "Segoe UI" if os.name == "nt" else ("Helvetica Neue" if IS_MAC else "Inter")
+WHEN_STARTS = "when you log in to your Mac" if IS_MAC else "when Windows starts"
 MODE_BG = {"live": AQUA, "loop": VIOLET, "glitch": AMBER}
 MODE_FG = {"live": MIDNIGHT, "loop": CLOUD, "glitch": MIDNIGHT}
 
@@ -141,6 +144,10 @@ class MainWindow:
         self.busy: BusyDialog | None = None
         self.tips: RecordTipsDialog | None = None
         engine.ui_attached = True  # Record shows the tips first
+        # Mac: is OBS Studio + its virtual camera installed? (checked in the background, every few seconds)
+        self.obs = {"obs": True, "camera": "unknown", "ready": True, "message": ""}
+        if IS_MAC:
+            self._watch_obs()
         self._build()
         self._no_button_focus(self.root)
         self._bind_keys()
@@ -172,6 +179,9 @@ class MainWindow:
                                    padx=8, pady=6)
         self.out_lbl = ttk.Label(side, text="", style="Small.TLabel", wraplength=300, justify="left")
         self.out_lbl.grid(sticky="w", pady=(6, 0))
+        # Mac only, while OBS or its camera is missing (beside the LIVE badge, so the panel doesn't grow)
+        self.obs_btn = ttk.Button(top, text="Get OBS Studio (free)", style="Accent.TButton",
+                                  command=self.open_obs_help)
 
         syncrow = ttk.Frame(side)
         syncrow.grid(sticky="ew", pady=(10, 0))
@@ -188,7 +198,7 @@ class MainWindow:
         # --- cut ---
         self.cut_btn = HoldButton(side, self.e)
         self.cut_btn.grid(sticky="ew", pady=(12, 3))
-        hk = self.cfg.hotkey.strip("<>").upper()
+        hk = ("fn+" if IS_MAC else "") + self.cfg.hotkey.strip("<>").upper()
         ttk.Label(side, text=f"Tap: cut now  ·  Hold: cut when in sync  ({hk} / Space)",
                   style="Small.TLabel").grid(sticky="w")
 
@@ -417,6 +427,14 @@ class MainWindow:
                                    foreground=AQUA)
         else:
             self.out_lbl.configure(text=f"● Not sending to Zoom: {o.error}", foreground=DANGER)
+        if IS_MAC:
+            need = not self.obs["ready"] and not o.connected
+            if need:
+                self.obs_btn.configure(text="Get OBS Studio (free)" if not self.obs["obs"] else "Finish OBS setup")
+                if not self.obs_btn.winfo_ismapped():
+                    self.obs_btn.pack(side="right")
+            elif self.obs_btn.winfo_ismapped():
+                self.obs_btn.pack_forget()
         rec = e.recorder.state
         self.rec_btn.configure(text="Cancel recording" if e.recording_active else
                                ("Stitching..." if rec == State.PROCESSING else "Record loop"))
@@ -445,6 +463,24 @@ class MainWindow:
             else:
                 self.busy.close()
                 self.busy = None
+
+    def _watch_obs(self) -> None:
+        def loop():
+            import time as _time
+            while True:
+                try:
+                    self.obs = macos.obs_status()
+                except Exception:  # noqa: BLE001
+                    pass
+                _time.sleep(3.0)
+        threading.Thread(target=loop, daemon=True, name="obs-check").start()
+
+    def open_obs_help(self) -> None:
+        """Mac: OBS missing -> its download page; installed but camera not set up -> the setup steps."""
+        if not self.obs["obs"]:
+            macos.open_obs_download()
+        else:
+            self.open_wizard(page="camera")
 
     def _refresh_tips(self) -> None:
         """'How to record a good loop' before each recording (until turned off)."""
@@ -476,9 +512,12 @@ class MainWindow:
         self.cfg.save(self.e.config_path)
         self.root.after(150, self.apply_capture_setting)
 
-    def open_wizard(self) -> None:
+    def open_wizard(self, page: str | None = None) -> None:
         if self.wizard is None or not self.wizard.alive:
             self.wizard = Wizard(self)
+        if page and page in self.wizard.STEPS:
+            self.wizard.step = self.wizard.STEPS.index(page)
+            self.wizard.render()
         self.wizard.win.lift()
 
     def open_settings(self) -> None:
@@ -489,12 +528,19 @@ class MainWindow:
     # ---------- lifecycle ----------
     def on_close(self) -> None:
         if self.e.mode == "loop" and not messagebox.askyesno(
-                "Quit Doppleganger?", "The LOOP is on air. Quitting stops the Doppleganger camera picture.\n\nQuit?",
+                "Quit Doppleganger?", "The LOOP is on air. Quitting stops the picture Zoom sees.\n\nQuit?",
                 parent=self.root):
             return
         self.e.stop()
 
     def run(self) -> None:
+        if IS_MAC:
+            try:
+                self.root.createcommand("tk::mac::Quit", self.on_close)          # Cmd+Q / Dock > Quit
+                self.root.createcommand("tk::mac::ReopenApplication", self.show_main)  # click the Dock icon
+                self.root.createcommand("tk::mac::ShowPreferences", self.open_settings)  # Cmd+,
+            except tk.TclError:
+                pass
         self._engine_thread = threading.Thread(target=self.e.run, daemon=True, name="engine")
         self._engine_thread.start()
         self.root.after(200, self.apply_capture_setting)
@@ -504,7 +550,8 @@ class MainWindow:
         elif self.cfg.mini_bar:
             self.root.after(300, self.show_minibar)
         if not self.cfg.setup_done:
-            if self.e.player is not None and self.e.tray_driver_installed():
+            camera_ok = macos.obs_status()["ready"] if IS_MAC else self.e.tray_driver_installed()
+            if self.e.player is not None and camera_ok:
                 self.cfg.setup_done = True  # already set up with an earlier version
                 self.cfg.save(self.e.config_path)
             else:
@@ -704,8 +751,17 @@ class SettingsWindow:
 
         ttk.Label(f, text="Hotkeys (work while Zoom is focused)", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
         hk, gk = self.cfg.hotkey.strip("<>").upper(), self.cfg.glitch_hotkey.strip("<>").upper()
+        if IS_MAC:
+            hk, gk = f"fn+{hk}", f"fn+{gk}"
         ttk.Label(f, text=f"{hk}: tap = cut now, hold = cut when in sync     {gk}: fake a bad connection",
                   style="Small.TLabel").grid(sticky="w")
+        if IS_MAC:
+            mac_hk = ttk.Frame(f)
+            mac_hk.grid(sticky="ew")
+            ttk.Label(mac_hk, text="Mac: needs Input Monitoring permission for Doppleganger.",
+                      style="Small.TLabel").pack(side="left")
+            ttk.Button(mac_hk, text="Open settings", command=lambda: (
+                macos.request_input_monitoring(), macos.open_input_monitoring_settings())).pack(side="right")
 
         ttk.Label(f, text="Finding you in the picture", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
         cal = ttk.Frame(f)
@@ -715,19 +771,23 @@ class SettingsWindow:
         ttk.Label(cal, text=how, style="Small.TLabel", wraplength=330, justify="left").pack(side="left")
         ttk.Button(cal, text="Calibrate room", command=lambda: self.e.request("calibrate")).pack(side="right")
 
-        ttk.Label(f, text="Doppleganger camera", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
+        ttk.Label(f, text="OBS Virtual Camera" if IS_MAC else "Doppleganger camera",
+                  style="Head.TLabel").grid(sticky="w", pady=(12, 2))
         self.v_startup = tk.BooleanVar(value=winutil.starts_with_windows())
         self.startup_chk = ttk.Checkbutton(
-            f, text="Start Doppleganger (minimized) when Windows starts - so Zoom always gets a picture",
+            f, text=f"Start Doppleganger (minimized) {WHEN_STARTS} - so Zoom always gets a picture",
             variable=self.v_startup, command=self._startup_changed)
         self.startup_chk.grid(sticky="w")
         if winutil.startup_command() is None:
             self.startup_chk.state(["disabled"])
         cam = ttk.Frame(f)
         cam.grid(sticky="ew")
-        self.drv_lbl = ttk.Label(cam, text="", style="Small.TLabel")
+        self.drv_lbl = ttk.Label(cam, text="", style="Small.TLabel", wraplength=330, justify="left")
         self.drv_lbl.pack(side="left")
-        self.drv_btn = ttk.Button(cam, text="Install", command=self._driver)
+        if IS_MAC:  # the OBS Virtual Camera instead of our own driver
+            self.drv_btn = ttk.Button(cam, text="Get OBS Studio", command=main.open_obs_help)
+        else:
+            self.drv_btn = ttk.Button(cam, text="Install", command=self._driver)
         self.drv_btn.pack(side="right")
 
         ttk.Label(f, text="Updates", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
@@ -773,6 +833,13 @@ class SettingsWindow:
             return
         self.v_guides.set(self.cfg.show_guides)
         self.v_outlines.set(self.cfg.show_outlines)
+        if IS_MAC:
+            st = self.main.obs
+            self.drv_lbl.configure(text=("OBS Virtual Camera ready ✓ - choose it in Zoom" if st["ready"]
+                                         else st["message"]))
+            self.drv_btn.configure(text="Get OBS Studio" if not st["obs"] else "Setup steps",
+                                   state="disabled" if st["ready"] else "normal")
+            return
         installed = self.e.tray_driver_installed()
         self.drv_lbl.configure(text="Installed ✓ - choose \"Doppleganger\" in Zoom" if installed
                                else "Not installed")
@@ -890,7 +957,7 @@ class Wizard:
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self.step = 0
         self._logo = _photo(brand.asset("logo_dark.png"), 330)
-        self.body = ttk.Frame(self.win, padding=24, width=480, height=350)
+        self.body = ttk.Frame(self.win, padding=24, width=480, height=400 if IS_MAC else 350)
         self.body.pack(fill="both", expand=True)
         self.body.pack_propagate(False)
         nav = ttk.Frame(self.win, padding=(24, 0, 24, 18))
@@ -972,10 +1039,32 @@ class Wizard:
                    "and record your first loop.")
 
     def _page_camera(self):
+        if IS_MAC:
+            return self._page_camera_mac()
         self._title("1  Add the Doppleganger camera")
         self._para("This adds a camera named \"Doppleganger\" that Zoom, Teams and browsers can use. "
                    "Windows asks for permission once.")
         self._button("Install camera", "install_driver")
+        self._status()
+
+    def _page_camera_mac(self):
+        self._title("1  Set up the OBS camera")
+        self._para("On a Mac, Doppleganger sends your picture to Zoom through the free OBS Virtual Camera. "
+                   "OBS only has to be installed and set up once - it doesn't need to be open during meetings.")
+        steps = ("Install OBS Studio 30 or newer.",
+                 "Open OBS and click \"Start Virtual Camera\" (bottom right). When macOS asks, allow the "
+                 "camera extension in System Settings.",
+                 "Click \"Stop Virtual Camera\" and quit OBS. Then choose \"OBS Virtual Camera\" in Zoom.")
+        for i, t in enumerate(steps, 1):
+            ttk.Label(self.body, text=f"{i}.  {t}", wraplength=430, justify="left", style="Small.TLabel").pack(
+                anchor="w", pady=(0, 4))
+        row = ttk.Frame(self.body)
+        row.pack(anchor="w", pady=(6, 0))
+        ttk.Button(row, text="Download OBS Studio", style="Accent.TButton",
+                   command=macos.open_obs_download).pack(side="left")
+        ttk.Button(row, text="Open OBS", command=macos.open_obs).pack(side="left", padx=6)
+        ttk.Button(row, text="Allow in Settings",
+                   command=macos.open_camera_extension_settings).pack(side="left")
         self._status()
 
     def _page_webcam(self):
@@ -1008,14 +1097,21 @@ class Wizard:
         self._title(f"{self.STEPS.index('zoom')}  Use it in your meeting")
         hk = self.main.cfg.hotkey.strip("<>").upper()
         gk = self.main.cfg.glitch_hotkey.strip("<>").upper()
-        self._para("In Zoom: Settings → Video → Camera → \"Doppleganger\".  In Teams: Settings → Devices → Camera.")
+        cam = "OBS Virtual Camera" if IS_MAC else "Doppleganger"
+        self._para(f"In Zoom: Settings → Video → Camera → \"{cam}\".  In Teams: Settings → Devices → Camera.")
+        if IS_MAC:
+            hk, gk = f"fn+{hk}", f"fn+{gk}"
         self._para(f"Tap {hk} to cut instantly. Hold {hk} and Doppleganger cuts by itself the moment you're in "
                    f"sync. {gk} fakes a bad connection if you're called on unexpectedly.")
         self._para("While the loop is on air your microphone is muted, and Doppleganger never appears in "
                    "screen shares. The Mini bar keeps the controls beside Zoom.")
+        if IS_MAC and macos.has_input_monitoring() is False:
+            ttk.Button(self.body, text="Allow hotkeys while Zoom is in front (Input Monitoring)",
+                       command=lambda: (macos.request_input_monitoring(),
+                                        macos.open_input_monitoring_settings())).pack(anchor="w", pady=(2, 4))
         if winutil.startup_command() is not None:
             self._startup = tk.BooleanVar(value=winutil.starts_with_windows())
-            ttk.Checkbutton(self.body, text="Start Doppleganger when Windows starts (recommended - Zoom then "
+            ttk.Checkbutton(self.body, text=f"Start Doppleganger {WHEN_STARTS} (recommended - Zoom then "
                             "always gets a picture)", variable=self._startup,
                             command=lambda: winutil.set_start_with_windows(self._startup.get())).pack(
                 anchor="w", pady=(6, 0))
@@ -1026,7 +1122,15 @@ class Wizard:
         e = self.e
         page = self.STEPS[self.step]
         txt, col = "", CLOUD
-        if page == "camera":
+        if page == "camera" and IS_MAC:
+            st = self.main.obs
+            if e.output.connected:
+                txt, col = "✓ Ready - Doppleganger is sending to OBS Virtual Camera. Choose it in Zoom.", AQUA
+            elif st["ready"]:
+                txt, col = "✓ " + st["message"], AQUA
+            else:
+                txt, col = st["message"], AMBER
+        elif page == "camera":
             if e.tray_driver_installed():
                 txt, col = "✓ Installed - you can choose \"Doppleganger\" in Zoom.", AQUA
             elif not e.tray_driver_available():
