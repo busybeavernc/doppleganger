@@ -50,3 +50,13 @@ def test_private_repo_gives_helpful_error():
     with mock.patch("urllib.request.urlopen", not_found):
         with pytest.raises(updater.UpdateError, match="update_token"):
             updater.check("o/r")
+
+
+def test_relaunch_environment_drops_pyinstaller_markers():
+    fake = {"PATH": "C:\\Windows", "_PYI_APPLICATION_HOME_DIR": "C:\\Temp\\_MEI123",
+            "_PYI_PARENT_PROCESS_LEVEL": "1", "_MEIPASS2": "C:\\Temp\\_MEI123"}
+    with mock.patch.dict("os.environ", fake, clear=True):
+        env = updater.clean_environment()
+    assert env["PATH"] == "C:\\Windows"
+    assert not any(k.startswith("_PYI") or k == "_MEIPASS2" for k in env)
+    assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"

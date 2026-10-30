@@ -118,5 +118,19 @@ start "" "{exe}"
 del "%~f0"
 """)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True)
+    subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True, env=clean_environment())
     os._exit(0)
+
+
+def clean_environment() -> dict[str, str]:
+    """Environment for relaunching ourselves as a brand-new app.
+
+    A packaged (PyInstaller) app marks its environment with its private unpack
+    folder. If the relaunched .exe inherits those markers, it looks for
+    python312.dll in the OLD folder - which is deleted when this process exits -
+    and fails with "Failed to load Python DLL". So strip them and ask for a reset.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith("_PYI") and k.upper() != "_MEIPASS2"}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
