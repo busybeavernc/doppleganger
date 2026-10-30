@@ -72,5 +72,10 @@ Filename: "{app}\{#MyAppExe}"; Parameters: "--remove-camera"; Flags: waituntilte
 Filename: "{sys}\certutil.exe"; Parameters: "-user -delstore TrustedPublisher ""{#CertSubject}"""; Flags: runhidden waituntilterminated; RunOnceId: "UntrustPublisher"
 Filename: "{sys}\certutil.exe"; Parameters: "-user -delstore Root ""{#CertSubject}"""; Flags: runhidden waituntilterminated; RunOnceId: "UntrustRoot"
 
+[Registry]
+; "Start Doppleganger when Windows starts" (set from the app's Settings) is removed on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Doppleganger"; \
+  Flags: uninsdeletevalue dontcreatekey
+
 [UninstallDelete]
 Type: files; Name: "{app}\Doppleganger.exe.new"

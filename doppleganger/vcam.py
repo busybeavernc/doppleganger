@@ -19,7 +19,7 @@ import numpy as np
 
 CAMERA_NAME = "Doppleganger"
 CLSID = "{548A881E-7657-4231-8FEA-A9877D9743C9}"
-DRIVER_VERSION = "1"  # bump when the driver DLL changes, so installed copies get refreshed
+DRIVER_VERSION = "2"  # 2: neutral placeholder when the app is not running (fixes a Zoom crash)  # bump when the driver DLL changes, so installed copies get refreshed
 DLL64, DLL32 = "doppleganger_cam64.dll", "doppleganger_cam32.dll"
 VIRTUAL_CAMERA_HINTS = ("doppleganger", "obs virtual", "virtual cam", "unity video capture",
                         "softcam", "xsplit", "snap camera", "manycam")

@@ -82,7 +82,9 @@ Press **F10**. Zoom's picture turns jerky and random: frozen frames, uneven burs
 
 ## The Doppleganger camera
 
-A small DirectShow camera filter (64- and 32-bit) installed in `C:\ProgramData\Doppleganger`, built from [softcam](https://github.com/tshino/softcam) (MIT) with its own name and ID, so it never clashes with OBS or other virtual cameras. Zoom can select it any time: it shows black until Doppleganger is running, and the last picture, darkened, after you quit. If it isn't installed, Doppleganger falls back to OBS Virtual Camera (OBS must be installed and closed).
+A small DirectShow camera filter (64- and 32-bit) installed in `C:\ProgramData\Doppleganger`, built from [softcam](https://github.com/tshino/softcam) (MIT) with its own name and ID, so it never clashes with OBS or other virtual cameras.
+
+Zoom can select it any time. Whenever the Doppleganger app isn't running (not started yet, or quit), the camera shows a neutral dark **"Camera starting…"** picture. It's deliberately generic, because meeting participants can see it, and it's never a frozen frame of you. To make sure the camera always has a real picture, turn on *Settings → Start Doppleganger when Windows starts*; it opens minimized. If it isn't installed, Doppleganger falls back to OBS Virtual Camera (OBS must be installed and closed).
 
 ## Settings file
 

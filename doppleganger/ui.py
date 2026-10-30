@@ -111,9 +111,10 @@ class HoldButton(tk.Label):
 
 
 class MainWindow:
-    def __init__(self, engine):
+    def __init__(self, engine, minimized: bool = False):
         self.e = engine
         self.cfg = engine.cfg
+        self._start_minimized = minimized
         self.root = tk.Tk()
         self.root.title("Doppleganger")
         self.root.geometry("1280x760")
@@ -451,7 +452,9 @@ class MainWindow:
         self._engine_thread.start()
         self.root.after(200, self.apply_capture_setting)
         self.root.after(33, self.tick)
-        if self.cfg.mini_bar:
+        if self._start_minimized:
+            self.root.after(300, self.root.iconify)  # started with Windows: stay out of the way
+        elif self.cfg.mini_bar:
             self.root.after(300, self.show_minibar)
         if not self.cfg.setup_done:
             if self.e.player is not None and self.e.tray_driver_installed():
@@ -519,6 +522,13 @@ class SettingsWindow:
         ttk.Button(cal, text="Calibrate room", command=lambda: self.e.request("calibrate")).pack(side="right")
 
         ttk.Label(f, text="Doppleganger camera", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
+        self.v_startup = tk.BooleanVar(value=winutil.starts_with_windows())
+        self.startup_chk = ttk.Checkbutton(
+            f, text="Start Doppleganger (minimized) when Windows starts - so Zoom always gets a picture",
+            variable=self.v_startup, command=self._startup_changed)
+        self.startup_chk.grid(sticky="w")
+        if winutil.startup_command() is None:
+            self.startup_chk.state(["disabled"])
         cam = ttk.Frame(f)
         cam.grid(sticky="ew")
         self.drv_lbl = ttk.Label(cam, text="", style="Small.TLabel")
@@ -551,6 +561,13 @@ class SettingsWindow:
             self.e.request("mic_setting")
         if hide_changed:
             self.main.apply_capture_setting()
+
+    def _startup_changed(self) -> None:
+        try:
+            winutil.set_start_with_windows(self.v_startup.get())
+        except OSError as ex:
+            messagebox.showerror("Doppleganger", f"Couldn't change the startup setting: {ex}", parent=self.win)
+            self.v_startup.set(winutil.starts_with_windows())
 
     def _driver(self) -> None:
         self.e.request("uninstall_driver" if self.e.tray_driver_installed() else "install_driver")
@@ -798,6 +815,12 @@ class Wizard:
                    f"sync. {gk} fakes a bad connection if you're called on unexpectedly.")
         self._para("While the loop is on air your microphone is muted, and Doppleganger never appears in "
                    "screen shares. The Mini bar keeps the controls beside Zoom.")
+        if winutil.startup_command() is not None:
+            self._startup = tk.BooleanVar(value=winutil.starts_with_windows())
+            ttk.Checkbutton(self.body, text="Start Doppleganger when Windows starts (recommended - Zoom then "
+                            "always gets a picture)", variable=self._startup,
+                            command=lambda: winutil.set_start_with_windows(self._startup.get())).pack(
+                anchor="w", pady=(6, 0))
 
     def refresh(self):
         if not self.alive or self.status is None:
