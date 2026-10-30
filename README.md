@@ -47,18 +47,20 @@ Loops are saved in `loops/`. The newest one loads automatically.
 | Key | Action |
 |---|---|
 | **F9** (works even while Zoom is focused) or **Space** | Cut LIVE ↔ LOOP |
-| G | Show/hide the loop's start-pose silhouette while LIVE (preview only, never sent to Zoom) |
+| G | Show/hide the silhouette / off-air overlay (preview only, never sent to Zoom) |
 | X | Toggle a 300 ms crossfade on cuts (**off by default** – hard cuts) |
 | U | Check for updates |
 | Q | Quit |
 
 The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Record new loop, Check for updates, Quit.
 
-By default, cutting to the loop starts it from its first frame. While LIVE, the preview shows the loop's start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut to the loop and the switch is invisible.
+**First cut to the loop:** the loop starts at its first frame (your start pose). Before that first cut, the LIVE preview shows the start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut.
+
+**After that, the loop never restarts.** It keeps playing in the background, so cutting back and forth picks it up wherever it is. The preview then shows the feed that is *not* on air as a faint see-through overlay: the loop while you're LIVE, or your live camera while the LOOP is on air. Line yourself up with it. When the preview gets a green border ("In sync – cut is seamless"), cut. The overlay appears only in your preview, never in Zoom. G hides it; `overlay_opacity` in `config.json` sets its strength (default 0.35).
 
 ## Settings
 
-`config.json` is created on first run. Useful fields: `camera_index`, `width`/`height`/`fps`, `loop_seconds`, `hold_still_seconds`, `return_prompt_seconds`, `crossfade_ms`, `restart_loop_on_cut`, `hotkey` (pynput format, e.g. `"<ctrl>+<alt>+l"`).
+`config.json` is created on first run. Useful fields: `camera_index`, `width`/`height`/`fps`, `loop_seconds`, `hold_still_seconds`, `return_prompt_seconds`, `crossfade_ms`, `overlay_opacity`, `hotkey` (pynput format, e.g. `"<ctrl>+<alt>+l"`).
 
 Command-line shortcuts: `run.bat --camera 1 --seconds 120`, or `run.bat --no-vcam` for preview only.
 

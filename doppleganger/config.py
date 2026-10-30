@@ -24,7 +24,7 @@ class Config:
 
     # Live <-> loop switching
     crossfade_ms: int = 0               # 0 = hard cut (default)
-    restart_loop_on_cut: bool = True    # cut into the loop at its first frame
+    overlay_opacity: float = 0.35       # preview: see-through strength of the off-air feed
     hotkey: str = "<f9>"                # global hotkey (works while Zoom is focused)
 
     # Updates (installed Doppleganger.exe only)

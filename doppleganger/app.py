@@ -68,6 +68,8 @@ class App:
         self.player: LoopPlayer | None = None
         self.loop_sil: Silhouette | None = None
         self.loop_matcher: guides.PoseMatcher | None = None
+        self.loop_running = False   # becomes True on the first cut to the loop
+        self._sync = 0.0            # how well live and the current loop frame line up
         self.toast = self.output.error
         self.toast_until = time.monotonic() + (15 if self.toast else 0)
         self._actions: queue.Queue[str] = queue.Queue()  # from hotkey, tray menu, update thread
@@ -84,6 +86,8 @@ class App:
         if self.player:
             self.player.close()
         self.player = LoopPlayer(path, (self.cfg.width, self.cfg.height))
+        self.loop_running = False
+        self._sync = 0.0
         # Start-pose silhouette + matcher, so LIVE preview shows when a cut to the loop will be invisible.
         self.loop_sil = Silhouette.load(path + ".mask.png") if os.path.exists(path + ".mask.png") else None
         first = self.player.first_frame
@@ -111,8 +115,11 @@ class App:
             self.notify("No loop yet - press R to record one.")
             return
         new = "loop" if self.mode == "live" else "live"
-        if new == "loop" and self.cfg.restart_loop_on_cut:
+        if new == "loop" and not self.loop_running:
+            # First activation starts at frame 1 (your start pose). From then on the loop
+            # keeps playing in the background and is never restarted by a cut.
             self.player.restart()
+            self.loop_running = True
         if self.cfg.crossfade_ms > 0:
             self.fade_from, self.fade_start = self.mode, time.monotonic()
         self.mode = new
@@ -192,10 +199,12 @@ class App:
                     self._load_loop(self.recorder.result_path)
                     self.recorder.result_path = None
 
-                out = self._compose(live)
+                # Once activated, the loop advances every frame whether or not it's on air.
+                loop_frame = self.player.next_frame() if (self.loop_running and self.player) else None
+                out = self._compose(live, loop_frame)
                 self.output.send(out)
 
-                if not self._ui(out, live) or not self._handle_actions():
+                if not self._ui(out, live, loop_frame) or not self._handle_actions():
                     break
 
                 next_t += frame_dt
@@ -207,26 +216,37 @@ class App:
         finally:
             self.close()
 
-    def _source(self, which: str, live: np.ndarray) -> np.ndarray:
-        if which == "loop" and self.player is not None:
-            f = self.player.next_frame()
-            if f is not None:
-                return f
-        return live
-
-    def _compose(self, live: np.ndarray) -> np.ndarray:
-        cur = self._source(self.mode, live)
+    def _compose(self, live: np.ndarray, loop_frame: np.ndarray | None) -> np.ndarray:
+        cur = loop_frame if (self.mode == "loop" and loop_frame is not None) else live
         if self.fade_from and self.cfg.crossfade_ms > 0:
             t = (time.monotonic() - self.fade_start) * 1000 / self.cfg.crossfade_ms
             if t >= 1:
                 self.fade_from = None
             else:
-                prev = live if self.fade_from == "live" else self.player._last
+                prev = live if self.fade_from == "live" else loop_frame
                 if prev is not None:
                     return cv2.addWeighted(prev, 1 - t, cur, t, 0)
         return cur
 
-    def _ui(self, out: np.ndarray, live: np.ndarray) -> bool:
+    def _draw_offair_overlay(self, prev: np.ndarray, live: np.ndarray, loop_frame: np.ndarray) -> np.ndarray:
+        """Ghost the feed that's NOT on air over the preview, so you can line up before cutting back."""
+        cfg = self.cfg
+        other = loop_frame if self.mode == "live" else live
+        ghost = cv2.flip(other, 1) if cfg.mirror_preview else other
+        prev = cv2.addWeighted(prev, 1 - cfg.overlay_opacity, ghost, cfg.overlay_opacity, 0)
+        weight = self.loop_sil.weight_small if self.loop_sil is not None else None
+        diff = guides.frame_diff(guides.small_gray(live), guides.small_gray(loop_frame), weight)
+        self._sync = 0.7 * self._sync + 0.3 * max(0.0, 1.0 - diff / 35.0)
+        h, w = prev.shape[:2]
+        label = "loop" if self.mode == "live" else "live camera"
+        if self._sync >= 0.82:
+            cv2.rectangle(prev, (3, 3), (w - 4, h - 4), (60, 220, 60), 6)
+            guides.put_text(prev, "In sync - cut is seamless", (12, 60), 0.7, (80, 255, 80))
+        else:
+            guides.put_text(prev, f"Faded: {label}  (sync {int(self._sync * 100)}%)", (12, 60), 0.6)
+        return prev
+
+    def _ui(self, out: np.ndarray, live: np.ndarray, loop_frame: np.ndarray | None) -> bool:
         cfg = self.cfg
         recording = self.recorder.state in (State.COUNTDOWN, State.RECORDING)
         # While recording, the preview shows the live camera (what's being recorded).
@@ -234,6 +254,8 @@ class App:
         prev = cv2.flip(base, 1) if cfg.mirror_preview else base.copy()
         if recording or self.recorder.state == State.PROCESSING:
             prev = self.recorder.draw(prev, cfg.mirror_preview)
+        elif cfg.show_guides and self.loop_running and loop_frame is not None:
+            prev = self._draw_offair_overlay(prev, live, loop_frame)
         elif cfg.show_guides and self.mode == "live" and self.loop_matcher is not None:
             # Line up with the loop's start pose before cutting to it.
             glow = glow_amount(self.loop_matcher.update(live))
