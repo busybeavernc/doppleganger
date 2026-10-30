@@ -37,9 +37,48 @@ jobs:
           echo "VERSION = \"$v\"" > doppleganger/_build.py
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # ---- The "Doppleganger" camera: softcam (MIT) renamed and built for 64- and 32-bit apps ----
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build Doppleganger camera driver
+        shell: pwsh
+        run: |
+          git clone --quiet https://github.com/tshino/softcam driver_src
+          git -C driver_src checkout --quiet 6f5d8f9b5f7dc37a86a119b881bc75e1860fb3ec
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $line = & $vswhere -latest -property catalog_productLineVersion
+          $toolset = if ([int]$line -ge 2026) { "v145" } else { "v143" }
+          Write-Host "Visual Studio $line -> toolset $toolset"
+          python driver/patch_softcam.py driver_src $toolset
+          if ($LASTEXITCODE) { exit 1 }
+          $sol = (Resolve-Path driver_src).Path + "\"
+          foreach ($plat in "x64", "Win32") {
+            msbuild driver_src\src\softcam\softcam.vcxproj /m /v:minimal /p:Configuration=Release /p:Platform=$plat "/p:SolutionDir=$sol"
+            if ($LASTEXITCODE) { exit 1 }
+          }
+          New-Item -ItemType Directory -Force driver_build | Out-Null
+          $dll64 = Get-ChildItem driver_src\x64\Release -Recurse -Filter softcam.dll | Select-Object -First 1
+          $dll32 = Get-ChildItem driver_src\Win32\Release -Recurse -Filter softcam.dll | Select-Object -First 1
+          Copy-Item $dll64.FullName driver_build\doppleganger_cam64.dll
+          Copy-Item $dll32.FullName driver_build\doppleganger_cam32.dll
+          Copy-Item driver\SOFTCAM-LICENSE.txt driver_build\
+          Get-ChildItem driver_build
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build camera list helper
+        shell: cmd
+        run: cl /nologo /O2 /EHsc /utf-8 driver\listcams.cpp /Fe:driver_build\listcams.exe /Fo:driver_build\ ole32.lib oleaut32.lib strmiids.lib && driver_build\listcams.exe
+
       - name: Build Doppleganger.exe
         run: >
           pyinstaller --noconfirm --onefile --windowed --name Doppleganger
+          --add-data "driver_build/doppleganger_cam64.dll;driver"
+          --add-data "driver_build/doppleganger_cam32.dll;driver"
+          --add-data "driver_build/listcams.exe;driver"
+          --add-data "driver_build/SOFTCAM-LICENSE.txt;driver"
           --collect-data cv2
           --collect-binaries pyvirtualcam
           --hidden-import pynput.keyboard._win32

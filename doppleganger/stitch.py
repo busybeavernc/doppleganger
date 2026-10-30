@@ -60,3 +60,18 @@ def bridge_frames(last: np.ndarray, first: np.ndarray, n: int) -> list[np.ndarra
                        cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         out.append(cv2.addWeighted(wl, 1 - t, wf, t, 0))
     return out
+
+
+def morph(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    """One sharp in-between frame, fraction `t` of the way from `a` to `b`.
+
+    The nearer frame's pixels are moved part-way along the optical flow - no
+    cross-fade, so there is no soft "double image".
+    """
+    h, w = a.shape[:2]
+    src, other, frac = (a, b, t) if t < 0.5 else (b, a, 1.0 - t)
+    flow = _flow(cv2.cvtColor(src, cv2.COLOR_BGR2GRAY), cv2.cvtColor(other, cv2.COLOR_BGR2GRAY),
+                 min(1.0, 400.0 / w))
+    gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    return cv2.remap(src, gx - frac * flow[..., 0], gy - frac * flow[..., 1], cv2.INTER_LINEAR,
+                     borderMode=cv2.BORDER_REPLICATE)

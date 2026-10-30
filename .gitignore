@@ -11,3 +11,6 @@ doppleganger-error.log
 doppleganger/_build.py
 doppleganger.log
 background.png
+driver_src/
+driver_build/
+background-*.png

@@ -8,7 +8,8 @@ from dataclasses import asdict, dataclass, fields
 
 @dataclass
 class Config:
-    # Real webcam
+    # Real webcam (remembered by name; the index is only a fallback)
+    camera_name: str = ""
     camera_index: int = 0
     width: int = 1280
     height: int = 720
@@ -28,6 +29,10 @@ class Config:
     hotkey: str = "<f9>"                # global hotkey (works while Zoom is focused)
     glitch_hotkey: str = "<f10>"        # global: fake a bad connection (freeze/jump)
     glitch_max_seconds: float = 30.0    # glitch ends on its own after this long
+
+    # Output camera: "auto" = the Doppleganger camera if installed, else OBS Virtual Camera
+    output_camera: str = "auto"         # auto | doppleganger | obs
+    driver_prompted: bool = False       # asked once whether to install the Doppleganger camera
 
     # Updates (installed Doppleganger.exe only)
     auto_update: bool = True            # check GitHub Releases each time the app opens

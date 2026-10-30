@@ -10,6 +10,7 @@ Keys (preview window focused):
 from __future__ import annotations
 
 import argparse
+import re
 import logging
 import os
 import queue
@@ -28,19 +29,20 @@ from .recorder import Recorder, State
 from .tray import start_tray
 from .calibrate import Calibrator
 from .glitch import Glitch
+from . import vcam as vcamlib
 from .silhouette import Silhouette, glow_amount
 
 WINDOW = "Doppleganger"
-BACKGROUND_FILE = "background.png"  # calibrated empty room, next to the app
+BACKGROUND_FILE = "background.png"  # (older versions) calibrated empty room
 log = logging.getLogger("doppleganger")
 
 
 class Output:
-    """Sends frames to the OBS Virtual Camera driver.
+    """Sends frames to the virtual camera Zoom watches.
 
-    If it can't connect (OBS not installed, or OBS's own virtual camera is already
-    running and holding the camera), it keeps retrying every few seconds and the
-    preview shows why, so the problem is never silent.
+    Prefers our own "Doppleganger" camera; falls back to OBS Virtual Camera when
+    ours isn't installed (or `output_camera` says so). If it can't connect, it
+    retries every few seconds and the preview shows why - never silently.
     """
 
     RETRY_SECONDS = 3.0
@@ -49,30 +51,51 @@ class Output:
         self.cfg = cfg
         self.enabled = enabled
         self.cam = None
+        self.backend = ""
         self.error = "" if enabled else "Virtual camera disabled (--no-vcam)"
         self.device = ""
         self._next_try = 0.0
         self._last_logged = ""
-        self._connect()
+        if enabled:
+            self._connect()
+
+    def _pick_backend(self) -> str:
+        choice = self.cfg.output_camera
+        if choice in ("doppleganger", "obs"):
+            return choice
+        return "doppleganger" if vcamlib.installed_version() else "obs"
 
     def _connect(self) -> None:
         self._next_try = time.monotonic() + self.RETRY_SECONDS
+        backend = self._pick_backend()
         try:
-            import pyvirtualcam
-            self.cam = pyvirtualcam.Camera(self.cfg.width, self.cfg.height, self.cfg.fps,
-                                           fmt=pyvirtualcam.PixelFormat.BGR, backend="obs")
-            self.device, self.error = self.cam.device, ""
+            if backend == "doppleganger":
+                self.cam = vcamlib.DopplegangerCamera(self.cfg.width, self.cfg.height, self.cfg.fps)
+            else:
+                import pyvirtualcam
+                self.cam = pyvirtualcam.Camera(self.cfg.width, self.cfg.height, self.cfg.fps,
+                                               fmt=pyvirtualcam.PixelFormat.BGR, backend="obs")
+            self.backend, self.device, self.error = backend, self.cam.device, ""
             log.info("Virtual camera connected: %s", self.device)
         except Exception as e:  # noqa: BLE001
             self.cam = None
-            self.error = _explain_vcam_error(str(e))
+            self.error = _explain_vcam_error(backend, str(e))
             if self.error != self._last_logged:  # log each distinct problem once
-                log.warning("Virtual camera not connected: %s", e)
+                log.warning("Virtual camera (%s) not connected: %s", backend, e)
                 self._last_logged = self.error
+
+    def reconnect(self) -> None:
+        self.close()
+        if self.enabled:
+            self._connect()
 
     @property
     def connected(self) -> bool:
         return self.cam is not None
+
+    @property
+    def viewer_connected(self) -> bool:
+        return bool(getattr(self.cam, "viewer_connected", False))
 
     def send(self, frame: np.ndarray) -> None:
         if self.cam is None:
@@ -84,7 +107,7 @@ class Output:
         except Exception as e:  # noqa: BLE001
             log.warning("Virtual camera send failed: %s", e)
             self.close()
-            self.error = "Lost connection to OBS Virtual Camera - reconnecting..."
+            self.error = f"Lost connection to {self.device or 'the virtual camera'} - reconnecting..."
 
     def close(self) -> None:
         if self.cam:
@@ -95,20 +118,35 @@ class Output:
             self.cam = None
 
 
-def _explain_vcam_error(msg: str) -> str:
+def _explain_vcam_error(backend: str, msg: str) -> str:
     m = msg.lower()
+    if backend == "doppleganger":
+        if "already in use" in m:
+            return "The Doppleganger camera is in use by another copy of this app - close it"
+        return f"Doppleganger camera not available ({msg}) - reinstall it from the tray menu"
     if "not installed" in m:
-        return "OBS Virtual Camera driver not found - install OBS Studio (it doesn't need to be open)"
+        return ("No camera to send to - install the Doppleganger camera (tray menu) "
+                "or OBS Studio")
     if "could not be started" in m or "in use" in m or "already" in m:
         return "OBS Virtual Camera is busy - in OBS click 'Stop Virtual Camera' (or close OBS)"
     return f"Virtual camera not connected: {msg}"
+
+
+def background_file(camera_name: str) -> str:
+    """Calibration is per camera (each one sees the room differently)."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", camera_name).strip("-").lower() or "camera"
+    return f"background-{slug}.png"
 
 
 class App:
     def __init__(self, cfg: Config, vcam: bool, config_path: str):
         self.cfg = cfg
         self.config_path = config_path
-        self.camera = Camera(cfg.camera_index, cfg.width, cfg.height, cfg.fps)
+        idx, self.camera_name = vcamlib.resolve_camera(cfg.camera_name, cfg.camera_index)
+        self.camera = Camera(idx, cfg.width, cfg.height, cfg.fps)
+        if (cfg.camera_name, cfg.camera_index) != (self.camera_name, idx):
+            cfg.camera_name, cfg.camera_index = self.camera_name, idx
+            cfg.save(config_path)
         self.output = Output(cfg, vcam)
         self.recorder = Recorder(cfg)
         self.mode = "live"
@@ -127,14 +165,109 @@ class App:
         self.glitch = Glitch(cfg.glitch_max_seconds)
         self.calibrator: Calibrator | None = None
         self._record_after_calibration = False
-        self.background = (cv2.imread(BACKGROUND_FILE, cv2.IMREAD_UNCHANGED)
-                           if os.path.exists(BACKGROUND_FILE) else None)
-        self.recorder.background = self.background
+        self._load_background()
         path = latest_loop(cfg.loops_dir)
         if path:
             self._load_loop(path)
         self._start_global_hotkey()
-        self._tray = start_tray(self._actions.put, updater.current_version())
+        self._tray = start_tray(self._actions.put, updater.current_version(), self)
+
+    # ---------- tray menu state (called from the tray thread) ----------
+    def tray_cameras(self) -> list[str]:
+        now = time.monotonic()
+        if now - getattr(self, "_cams_at", -99) > 5:  # cache: the tray rebuilds its menu often
+            self._cams = [n for _, n in vcamlib.real_cameras()]
+            self._cams_at = now
+        return self._cams
+
+    def tray_current_camera(self) -> str:
+        return self.camera_name
+
+    def tray_driver_installed(self) -> bool:
+        return vcamlib.installed_version() is not None
+
+    def tray_driver_available(self) -> bool:
+        return vcamlib.bundled()
+
+    # ---------- camera selection ----------
+    def _load_background(self) -> None:
+        path = background_file(self.camera_name)
+        if not os.path.exists(path) and os.path.exists(BACKGROUND_FILE):
+            path = BACKGROUND_FILE  # calibration saved by an older version
+        self.background = cv2.imread(path, cv2.IMREAD_UNCHANGED) if os.path.exists(path) else None
+        self.recorder.background = self.background
+        if self.player is not None and self.player.first_frame is not None:
+            self._make_loop_matcher()
+
+    def switch_camera(self, name: str | None = None) -> None:
+        """Use the named camera, or the next real camera if no name is given."""
+        if self.recorder.state != State.IDLE or self.calibrator is not None:
+            self.notify("Finish recording/calibrating before switching cameras.")
+            return
+        cams = vcamlib.real_cameras()
+        if not cams:
+            self.notify("Couldn't list cameras on this PC.")
+            return
+        if name is None:  # cycle
+            names = [n for _, n in cams]
+            nxt = names[(names.index(self.camera_name) + 1) % len(names)] if self.camera_name in names else names[0]
+            name = nxt
+        match = next(((i, n) for i, n in cams if n == name), None)
+        if match is None:
+            self.notify(f"Camera not found: {name}")
+            return
+        if match[1] == self.camera_name:
+            return
+        old = self.camera
+        try:
+            self.camera = Camera(match[0], self.cfg.width, self.cfg.height, self.cfg.fps)
+        except RuntimeError as e:
+            self.notify(str(e), 6)
+            return
+        old.close()
+        self.camera_name = match[1]
+        self.cfg.camera_name, self.cfg.camera_index = match[1], match[0]
+        self.cfg.save(self.config_path)
+        self._load_background()
+        tip = "" if self.background is not None else " - press C to calibrate the silhouette for it"
+        self.notify(f"Camera: {match[1]}{tip}", 6)
+        log.info("Switched camera to %s (#%d)", match[1], match[0])
+
+    # ---------- Doppleganger camera driver ----------
+    def install_driver(self, ask: bool = False) -> None:
+        if not vcamlib.bundled():
+            self.notify("The Doppleganger camera is only included in the installed Doppleganger.exe.")
+            return
+        if ask and not _ask_yes_no(
+                "Add the Doppleganger camera?",
+                "Doppleganger can add its own camera, named \"Doppleganger\", that Zoom, Teams and "
+                "browsers can use - no OBS Studio needed.\n\nWindows will ask for permission once.\n\n"
+                "Install it now?"):
+            return
+        self.notify("Installing the Doppleganger camera - approve the Windows prompt...", 120)
+
+        def work():
+            ok, detail = vcamlib.install()
+            log.info("Driver install: %s (%s)", ok, detail)
+            if ok:
+                self._actions.put("driver_installed")
+            else:
+                self.notify(f"Camera install didn't finish ({detail}).", 8)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def uninstall_driver(self) -> None:
+        if not _ask_yes_no("Remove the Doppleganger camera?",
+                           "Zoom and other apps will no longer see the \"Doppleganger\" camera.\n\nRemove it?"):
+            return
+        self.output.close()  # release our handle on the DLL first
+
+        def work():
+            ok, detail = vcamlib.uninstall()
+            self.notify("Doppleganger camera removed." if ok else f"Removal didn't finish ({detail}).", 6)
+            self._actions.put("output_reconnect")
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------- setup ----------
     def _load_loop(self, path: str) -> None:
@@ -183,7 +316,7 @@ class App:
         if self.glitch.active:
             # The cut lands inside the glitch: the next "jump" reveals the new feed,
             # then the picture recovers like a connection coming back.
-            self.glitch.recover(time.monotonic(), delay=0.4)
+            self.glitch.recover(time.monotonic(), delay=0.4, clean_jump=True)
         elif self.cfg.crossfade_ms > 0:
             self.fade_from, self.fade_start = self.mode, time.monotonic()
         self.mode = new
@@ -222,7 +355,7 @@ class App:
             self.notify("Calibration didn't see enough of the room - press C to try again "
                         "(keep your face visible while you lean).", 10)
             return
-        cv2.imwrite(BACKGROUND_FILE, bg)
+        cv2.imwrite(background_file(self.camera_name), bg)
         self.background = bg
         self.recorder.background = bg
         if self.player is not None and self.player.first_frame is not None:
@@ -272,6 +405,17 @@ class App:
                 self.calibrate()
             elif a == "glitch":
                 self.toggle_glitch()
+            elif a.startswith("camera:"):
+                self.switch_camera(a.split(":", 1)[1])
+            elif a == "install_driver":
+                self.install_driver()
+            elif a == "uninstall_driver":
+                self.uninstall_driver()
+            elif a == "driver_installed":
+                self.output.reconnect()
+                self.notify("Doppleganger camera installed - choose \"Doppleganger\" as your camera in Zoom.", 10)
+            elif a == "output_reconnect":
+                self.output.reconnect()
             elif a == "update":
                 self.check_for_updates()
             elif a == "quit":
@@ -336,23 +480,23 @@ class App:
                     return cv2.addWeighted(prev, 1 - t, cur, t, 0)
         return cur
 
-    def _draw_offair_overlay(self, prev: np.ndarray, live: np.ndarray, loop_frame: np.ndarray) -> np.ndarray:
-        """Ghost the feed that's NOT on air over the preview, so you can line up before cutting back."""
+    def _draw_offair_overlay(self, prev: np.ndarray, on_air: np.ndarray, ghost_src: np.ndarray,
+                             label: str, text_y: int = 60) -> np.ndarray:
+        """Ghost `ghost_src` (the feed you'd cut to) over the preview of what's on air,
+        so you can line up before cutting - or before a glitch ends."""
         cfg = self.cfg
-        other = loop_frame if self.mode == "live" else live
-        ghost = cv2.flip(other, 1) if cfg.mirror_preview else other
+        ghost = cv2.flip(ghost_src, 1) if cfg.mirror_preview else ghost_src
         ghost = cv2.resize(ghost, (prev.shape[1], prev.shape[0]), interpolation=cv2.INTER_AREA)
         prev = cv2.addWeighted(prev, 1 - cfg.overlay_opacity, ghost, cfg.overlay_opacity, 0)
         weight = self.loop_sil.weight_small if self.loop_sil is not None else None
-        diff = guides.frame_diff(guides.small_gray(live), guides.small_gray(loop_frame), weight)
+        diff = guides.frame_diff(guides.small_gray(on_air), guides.small_gray(ghost_src), weight)
         self._sync = 0.7 * self._sync + 0.3 * max(0.0, 1.0 - diff / 35.0)
         h, w = prev.shape[:2]
-        label = "loop" if self.mode == "live" else "live camera"
         if self._sync >= 0.82:
             cv2.rectangle(prev, (3, 3), (w - 4, h - 4), (60, 220, 60), 6)
-            guides.put_text(prev, "In sync - cut is seamless", (12, 60), 0.7, (80, 255, 80))
+            guides.put_text(prev, "In sync - cut is seamless", (12, text_y), 0.7, (80, 255, 80))
         else:
-            guides.put_text(prev, f"Faded: {label}  (sync {int(self._sync * 100)}%)", (12, 60), 0.6)
+            guides.put_text(prev, f"Faded: {label}  (sync {int(self._sync * 100)}%)", (12, text_y), 0.6)
         return prev
 
     def _display_size(self, w: int, h: int) -> tuple[int, int]:
@@ -388,32 +532,27 @@ class App:
             guides.put_text(prev, "Can't see your face - turn toward the camera", (20, h - 145), 0.6, (90, 90, 255))
         guides.put_text(prev, "Esc = cancel", (w - 130, h - 80), 0.45)
 
-    def _draw_glitch(self, prev: np.ndarray, out: np.ndarray) -> None:
-        h, w = prev.shape[:2]
+    def _draw_glitch_banner(self, prev: np.ndarray) -> None:
         g = self.cfg.glitch_hotkey.strip("<>").upper()
         cut = self.cfg.hotkey.strip("<>").upper()
         if self.glitch.recovering:
             guides.banner(prev, "Connection 'recovering'...", (0, 120, 0))
         elif self.mode == "loop":
-            guides.banner(prev, f"Fake bad connection - get in position, then {cut} to go live", (0, 110, 220))
+            guides.banner(prev, f"Glitching - line up with the frozen picture, then {cut} to go live", (0, 110, 220))
         else:
-            guides.banner(prev, f"Fake bad connection - {g} to end", (0, 110, 220))
-        # what Zoom sees right now
-        iw = w // 4
-        ih = iw * out.shape[0] // out.shape[1]
-        inset = cv2.resize(cv2.flip(out, 1) if self.cfg.mirror_preview else out, (iw, ih),
-                           interpolation=cv2.INTER_AREA)
-        x0, y0 = w - iw - 12, h - ih - 70
-        guides.rounded_rect(prev, (x0 - 4, y0 - 26), (x0 + iw + 4, y0 + ih + 4), (20, 20, 20), 8, 0.8)
-        prev[y0:y0 + ih, x0:x0 + iw] = inset
-        guides.put_text(prev, "Zoom sees:", (x0 + 4, y0 - 8), 0.45)
+            guides.banner(prev, f"Glitching - line up with the frozen picture, then {g} to end", (0, 110, 220))
 
     def _draw_output_status(self, prev: np.ndarray) -> None:
         """Always-visible: is the picture actually reaching Zoom?"""
         h, w = prev.shape[:2]
         if self.output.connected:
-            cv2.circle(prev, (w - 228, 74), 7, (60, 220, 60), -1, cv2.LINE_AA)
-            guides.put_text(prev, "Sending to OBS Virtual Camera", (w - 214, 80), 0.45)
+            label = "Sending to Doppleganger camera" if self.output.backend == "doppleganger" \
+                else "Sending to OBS Virtual Camera"
+            if self.output.viewer_connected:
+                label += " (in use)"
+            tw, _ = guides.text_size(label, 0.45)
+            cv2.circle(prev, (w - tw - 26, 74), 6, (60, 220, 60), -1, cv2.LINE_AA)
+            guides.put_text(prev, label, (w - tw - 14, 80), 0.45)
         else:
             cv2.rectangle(prev, (0, h - 64), (w, h - 34), (30, 30, 190), -1)
             guides.put_text(prev, "NOT SENDING TO ZOOM: " + self.output.error, (10, h - 42), 0.5)
@@ -423,18 +562,22 @@ class App:
         recording = self.recorder.state in (State.COUNTDOWN, State.RECORDING)
         # While recording, the preview shows the live camera (what's being recorded).
         glitching = self.glitch.active
-        base = live if (recording or glitching) else out
+        base = live if recording else out  # while glitching: the frozen picture Zoom sees
         prev = cv2.flip(base, 1) if cfg.mirror_preview else base
         # Draw everything at the window's real size, so text and edges stay crisp.
         prev = cv2.resize(prev, self._display_size(prev.shape[1], prev.shape[0]), interpolation=cv2.INTER_AREA)
         if self.calibrator is not None:
             self._draw_calibration(prev)
-        elif glitching:
-            self._draw_glitch(prev, out)
         elif recording or self.recorder.state == State.PROCESSING:
             prev = self.recorder.draw(prev, cfg.mirror_preview)
+        elif glitching:
+            # Same overlay as always: your live camera see-through over what Zoom sees,
+            # so the picture after the glitch lands where the frozen one is.
+            prev = self._draw_offair_overlay(prev, out, live, "live camera", text_y=135)
+            self._draw_glitch_banner(prev)
         elif cfg.show_guides and self.loop_running and loop_frame is not None:
-            prev = self._draw_offair_overlay(prev, live, loop_frame)
+            on_air, other = (loop_frame, live) if self.mode == "loop" else (live, loop_frame)
+            prev = self._draw_offair_overlay(prev, on_air, other, "live camera" if self.mode == "loop" else "loop")
         elif cfg.show_guides and self.mode == "live" and self.loop_matcher is not None:
             # Line up with the loop's start pose before cutting to it.
             glow = glow_amount(self.loop_matcher.update(live))
@@ -455,7 +598,7 @@ class App:
         if not recording:
             fade = f"crossfade {cfg.crossfade_ms}ms" if cfg.crossfade_ms else "hard cut"
             guides.put_text(prev, f"SPACE/{cfg.hotkey.strip('<>').upper()} cut ({fade})  R record  "
-                                  f"B glitch  C calibrate  G guides  X fade  U update  Q quit", (12, h - 14), 0.5)
+                                  f"B glitch  K camera  C calibrate  G guides  U update  Q quit", (12, h - 14), 0.5)
         msg = self.recorder.message if self.recorder.state == State.PROCESSING else ""
         if not msg and time.monotonic() < self.toast_until:
             msg = self.toast
@@ -477,6 +620,8 @@ class App:
             self.check_for_updates()
         elif key == 27:
             self.recorder.cancel()
+        elif key in (ord("k"), ord("K")):
+            self.switch_camera()
         elif key in (ord("b"), ord("B")):
             self.toggle_glitch()
         elif key in (ord("c"), ord("C")):
@@ -530,7 +675,25 @@ def main() -> None:
         cfg.save(args.config)
     if cfg.auto_update and updater.can_self_update():
         startup_update(cfg)
-    App(cfg, vcam=not args.no_vcam, config_path=args.config).run()
+    app = App(cfg, vcam=not args.no_vcam, config_path=args.config)
+    if vcamlib.needs_install() and not args.no_vcam:
+        upgrading = vcamlib.installed_version() is not None
+        if upgrading or not cfg.driver_prompted:
+            cfg.driver_prompted = True
+            cfg.save(args.config)
+            if upgrading:
+                app.install_driver(ask=False)  # newer camera driver shipped with this version
+            else:
+                app.install_driver(ask=True)
+    app.run()
+
+
+def _ask_yes_no(title: str, text: str) -> bool:
+    try:
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(None, text, title, 0x04 | 0x20 | 0x40000) == 6  # YES
+    except Exception:  # noqa: BLE001 - not on Windows
+        return False
 
 
 def startup_update(cfg: Config) -> None:
