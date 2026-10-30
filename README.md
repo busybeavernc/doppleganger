@@ -16,10 +16,10 @@ Press **R** while LIVE. Then:
 
 | Time (default 90s loop) | What you'll see | What to do |
 |---|---|---|
-| 3s countdown | "Get in your start pose" | Line your head up with the orange center dots |
-| 0–10s | **HOLD STILL – start pose** + movement meter | No big head/body movement. This is the loop's first frame |
+| 3s countdown | "Get in your start pose" | Settle into a comfortable, centered position |
+| 0–10s | **HOLD STILL – start pose** + movement meter. Your silhouette is captured from the first frame and stays in the background for the rest of the recording | No big head/body movement |
 | 10–80s | "Recording – move naturally" | Look at the screen, nod, blink, look like you're listening |
-| 80–90s | Ghost of the first frame + cyan dots where your head was + **Match %** meter + **HOLD STILL** | Return to the same position *and* expression; hold still once the meter is green |
+| 80–90s | "Step back into your silhouette" + first-frame thumbnail + **Match %** meter | Line yourself up with the silhouette and copy your starting expression. The silhouette **glows green** when you're back in position: hold still |
 
 Press **E** in the final stretch to end early once you're matched, or **Esc** to cancel.
 
@@ -35,11 +35,11 @@ Loops are saved in `loops/`. The newest one loads automatically.
 | Key | Action |
 |---|---|
 | **F9** (works even while Zoom is focused) or **Space** | Cut LIVE ↔ LOOP |
-| G | Show/hide alignment dots (preview only, never sent to Zoom) |
+| G | Show/hide the loop's start-pose silhouette while LIVE (preview only, never sent to Zoom) |
 | X | Toggle a 300 ms crossfade on cuts (**off by default** – hard cuts) |
 | Q | Quit |
 
-By default, cutting to the loop starts it from its first frame. Get into your start pose before cutting, so the switch is invisible.
+By default, cutting to the loop starts it from its first frame. While LIVE, the preview shows the loop's start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut to the loop and the switch is invisible.
 
 ## Settings
 

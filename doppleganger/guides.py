@@ -1,5 +1,4 @@
-"""Alignment aids drawn on the PREVIEW only (never sent to the virtual camera):
-dot grid, start-pose anchors, onion-skin of the first frame, match and motion meters."""
+"""Pose matching and preview text/meters (preview only, never sent to the virtual camera)."""
 from __future__ import annotations
 
 import cv2
@@ -17,9 +16,12 @@ def small_gray(frame: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(g, (5, 5), 0)
 
 
-def frame_diff(a_small: np.ndarray, b_small: np.ndarray) -> float:
-    """Mean absolute pixel difference (0 = identical, ~255 = opposite)."""
-    return float(np.mean(cv2.absdiff(a_small, b_small)))
+def frame_diff(a_small: np.ndarray, b_small: np.ndarray, weight: np.ndarray | None = None) -> float:
+    """Mean absolute pixel difference (0 = identical), optionally weighted by a 0..1 map."""
+    d = cv2.absdiff(a_small, b_small).astype(np.float32)
+    if weight is None:
+        return float(np.mean(d))
+    return float(np.sum(d * weight) / max(np.sum(weight), 1.0))
 
 
 def detect_face(frame: np.ndarray) -> Box | None:
@@ -43,9 +45,10 @@ def detect_face(frame: np.ndarray) -> Box | None:
     return int(x / scale), int(y / scale), int(w / scale), int(h / scale)
 
 
-def match_score(ref_small, live_small, ref_box: Box | None, live_box: Box | None, width: int) -> float:
-    """0..1, how closely the live frame matches the loop's first frame."""
-    pix = max(0.0, 1.0 - frame_diff(ref_small, live_small) / 35.0)
+def match_score(ref_small, live_small, ref_box: Box | None, live_box: Box | None, width: int,
+                weight: np.ndarray | None = None) -> float:
+    """0..1, how closely the live frame matches the start pose."""
+    pix = max(0.0, 1.0 - frame_diff(ref_small, live_small, weight) / 35.0)
     if ref_box is None or live_box is None:
         return pix
     rcx, rcy = ref_box[0] + ref_box[2] / 2, ref_box[1] + ref_box[3] / 2
@@ -56,48 +59,37 @@ def match_score(ref_small, live_small, ref_box: Box | None, live_box: Box | None
     return 0.5 * pix + 0.5 * pos
 
 
-# ---------- drawing (preview only) ----------
+class PoseMatcher:
+    """Tracks how well the live camera matches a reference (start) frame."""
 
-def draw_dot_grid(img: np.ndarray, cols: int = 9, rows: int = 7) -> None:
-    h, w = img.shape[:2]
-    r = max(2, w // 400)
-    for i in range(1, cols):
-        for j in range(1, rows):
-            c = (int(w * i / cols), int(h * j / rows))
-            cv2.circle(img, c, r + 1, (0, 0, 0), -1, cv2.LINE_AA)
-            cv2.circle(img, c, r, (230, 230, 230), -1, cv2.LINE_AA)
-    # stronger center cross for head placement
-    cx, cy = w // 2, int(h * 0.42)
-    for dx, dy in ((0, 0), (-w // 12, 0), (w // 12, 0), (0, -h // 8), (0, h // 8)):
-        cv2.circle(img, (cx + dx, cy + dy), r + 2, (0, 200, 255), -1, cv2.LINE_AA)
+    def __init__(self, ref_frame: np.ndarray, ref_box: Box | None = None, weight: np.ndarray | None = None):
+        self.ref_small = small_gray(ref_frame)
+        self.ref_box = ref_box if ref_box is not None else detect_face(ref_frame)
+        self.width = ref_frame.shape[1]
+        self.weight = weight          # silhouette weight map (set once it's computed)
+        self.live_box: Box | None = None
+        self.score = 0.0
+        self._tick = 0
 
-
-def draw_anchor(img: np.ndarray, ref_box: Box | None, live_box: Box | None) -> None:
-    """Cyan dots = where your head was in the first frame. Yellow = where it is now."""
-    if ref_box is not None:
-        x, y, w, h = ref_box
-        for p in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
-            cv2.circle(img, p, 6, (255, 255, 0), -1, cv2.LINE_AA)
-        cv2.circle(img, (x + w // 2, y + h // 2), 9, (255, 255, 0), 2, cv2.LINE_AA)
-    if live_box is not None:
-        x, y, w, h = live_box
-        cv2.circle(img, (x + w // 2, y + h // 2), 6, (0, 255, 255), -1, cv2.LINE_AA)
-        if ref_box is not None:
-            rx, ry, rw, rh = ref_box
-            cv2.line(img, (rx + rw // 2, ry + rh // 2), (x + w // 2, y + h // 2), (0, 255, 255), 2, cv2.LINE_AA)
+    def update(self, frame: np.ndarray, small: np.ndarray | None = None) -> float:
+        small = small_gray(frame) if small is None else small
+        if self._tick % 3 == 0:  # face detection every 3rd frame is plenty
+            self.live_box = detect_face(frame)
+        self._tick += 1
+        s = match_score(self.ref_small, small, self.ref_box, self.live_box, self.width, self.weight)
+        self.score = 0.7 * self.score + 0.3 * s  # smooth so the glow doesn't flicker
+        return self.score
 
 
-def onion_skin(live: np.ndarray, ref: np.ndarray, alpha: float = 0.4) -> np.ndarray:
-    return cv2.addWeighted(live, 1.0 - alpha, ref, alpha, 0)
-
+# ---------- drawing helpers ----------
 
 def draw_meter(img, label: str, value: float, y: int, good_high: bool = True) -> None:
     """Horizontal bar 0..1. Green when good."""
-    h, w = img.shape[:2]
+    w = img.shape[1]
     x0, bw, bh = 20, w // 3, 18
     value = float(np.clip(value, 0, 1))
-    good = value >= 0.75 if good_high else value <= 0.35
-    ok_mid = value >= 0.5 if good_high else value <= 0.6
+    good = value >= 0.82 if good_high else value <= 0.35
+    ok_mid = value >= 0.6 if good_high else value <= 0.6
     color = (60, 200, 60) if good else ((0, 200, 255) if ok_mid else (40, 40, 230))
     cv2.rectangle(img, (x0, y), (x0 + bw, y + bh), (40, 40, 40), -1)
     cv2.rectangle(img, (x0, y), (x0 + int(bw * value), y + bh), color, -1)

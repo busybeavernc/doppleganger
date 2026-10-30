@@ -4,8 +4,9 @@ Timeline of a recording (defaults):
   countdown 3s
   0-10s     HOLD STILL      (start pose; this is frame 0 of the loop)
   10s-80s   move naturally
-  80s-90s   RETURN + HOLD STILL: first frame shown as a ghost overlay,
-            match meter tells you when you're back in the same pose/expression
+  80s-90s   RETURN + HOLD STILL: step back into the start-pose silhouette
+            (shown the whole time); it glows green once you match, and a
+            first-frame thumbnail helps you match your expression
   -> best-matching frame in the final seconds becomes the loop's last frame,
      plus a few motion-matched bridge frames back to frame 0.
 """
@@ -23,6 +24,7 @@ import numpy as np
 
 from . import guides
 from .config import Config
+from .silhouette import Silhouette, extract, glow_amount
 from .stitch import bridge_frames, bridge_length, find_best_end
 
 
@@ -73,14 +75,19 @@ class Recorder:
         self.rec_start = 0.0
         self.smalls: list[np.ndarray] = []
         self.first_frame: np.ndarray | None = None
-        self.first_small: np.ndarray | None = None
-        self.ref_box = None
-        self.live_box = None
+        self.matcher: guides.PoseMatcher | None = None
+        self.silhouette: Silhouette | None = None
+        self._sil_thread: threading.Thread | None = None
         self.motion = 0.0
         self.match = 0.0
         self._writer: _Writer | None = None
         self._raw_path = ""
-        self._face_tick = 0
+
+    def _make_silhouette(self, frame: np.ndarray, face) -> None:
+        sil = extract(frame, face)
+        if self.matcher is not None:
+            self.matcher.weight = sil.weight_small
+        self.silhouette = sil
 
     # ---------- control ----------
     def start(self) -> None:
@@ -138,18 +145,18 @@ class Recorder:
         small = guides.small_gray(frame)
         if not self.smalls:
             self.first_frame = frame.copy()
-            self.first_small = small
-            self.ref_box = guides.detect_face(frame)
+            self.matcher = guides.PoseMatcher(frame)
+            # Cut the silhouette out on a background thread (~0.2s) so output never stalls.
+            self._sil_thread = threading.Thread(target=self._make_silhouette,
+                                                args=(self.first_frame, self.matcher.ref_box), daemon=True)
+            self._sil_thread.start()
         else:
             self.motion = 0.7 * self.motion + 0.3 * min(1.0, guides.frame_diff(self.smalls[-1], small) / 6.0)
         self._writer.write(frame)
         self.smalls.append(small)
 
         if self.in_return_zone():
-            self._face_tick += 1
-            if self._face_tick % 3 == 0:  # face detection every 3rd frame is plenty
-                self.live_box = guides.detect_face(frame)
-            self.match = guides.match_score(self.first_small, small, self.ref_box, self.live_box, frame.shape[1])
+            self.match = self.matcher.update(frame, small)
 
         if self.remaining <= 0:
             self._finish()
@@ -165,6 +172,10 @@ class Recorder:
         try:
             path = self.process_raw(self._raw_path, self.smalls, self.cfg)
             os.remove(self._raw_path)
+            if self._sil_thread is not None:
+                self._sil_thread.join()
+            if self.silhouette is not None:  # kept with the loop for lining up before a cut
+                self.silhouette.save(path + ".mask.png")
             self.result_path = path
             self.message = f"New loop ready: {os.path.basename(path)}"
         except Exception as e:  # noqa: BLE001 - show any failure in the UI
@@ -206,7 +217,7 @@ class Recorder:
 
     # ---------- preview overlay ----------
     def draw(self, preview: np.ndarray, mirrored: bool) -> np.ndarray:
-        """Coaching overlay on the preview. Returns the (possibly onion-skinned) preview."""
+        """Coaching overlay on the preview (drawn in place; also returned)."""
         cfg = self.cfg
         h, w = preview.shape[:2]
         if self.state == State.COUNTDOWN:
@@ -216,16 +227,19 @@ class Recorder:
         if self.state != State.RECORDING:
             return preview
 
-        if self.in_return_zone() and self.first_frame is not None:
+        returning = self.in_return_zone()
+        glow = glow_amount(self.match) if returning else 0.0
+        if self.silhouette is not None:  # start-pose silhouette stays up for the whole recording
+            self.silhouette.draw(preview, mirrored, glow)
+
+        if returning and self.first_frame is not None:
             ghost = cv2.flip(self.first_frame, 1) if mirrored else self.first_frame
-            preview = guides.onion_skin(preview, ghost, 0.4)
-            ref = _mirror_box(self.ref_box, w) if mirrored else self.ref_box
-            live = _mirror_box(self.live_box, w) if mirrored else self.live_box
-            guides.draw_anchor(preview, ref, live)
-            guides.banner(preview, "Back to START pose & expression - HOLD STILL",
-                          (0, 110, 0) if self.match >= 0.75 else (0, 90, 200))
+            if glow >= 0.99:
+                guides.banner(preview, "Matched - HOLD STILL", (0, 130, 0))
+            else:
+                guides.banner(preview, "Step back into your silhouette - same expression", (0, 90, 200))
             guides.draw_meter(preview, f"Match {int(self.match * 100)}%", self.match, h - 90)
-            # small inset of the first frame
+            # small inset of the first frame, for matching your expression
             iw = w // 5
             inset = cv2.resize(ghost, (iw, iw * ghost.shape[0] // ghost.shape[1]))
             top = int(h * 0.12) + 30  # below the banner
@@ -252,10 +266,3 @@ class Recorder:
         if self.in_return_zone():
             guides.put_text(preview, "E = end now", (w - 160, h - 50), 0.5)
         return preview
-
-
-def _mirror_box(box, width):
-    if box is None:
-        return None
-    x, y, bw, bh = box
-    return width - x - bw, y, bw, bh

@@ -17,6 +17,9 @@ class LoopPlayer:
             raise RuntimeError(f"Could not open loop {path}")
         self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self._last: np.ndarray | None = None
+        ok, f = self.cap.read()
+        self.first_frame: np.ndarray | None = cv2.resize(f, size) if ok else None
+        self.restart()
 
     def restart(self) -> None:
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)

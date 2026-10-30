@@ -4,7 +4,7 @@ Keys (preview window focused):
   SPACE  cut between LIVE and LOOP        (also the global hotkey, default F9)
   R      record a new loop                ESC  cancel recording
   E      end recording now (only in the final return zone)
-  G      show/hide alignment dots         X    toggle crossfade on cuts
+  G      show/hide start-pose silhouette  X    toggle crossfade on cuts
   Q      quit
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ from .camera import Camera
 from .config import Config
 from .player import LoopPlayer, latest_loop
 from .recorder import Recorder, State
+from .silhouette import Silhouette, glow_amount
 
 WINDOW = "Doppleganger"
 
@@ -62,6 +63,8 @@ class App:
         self.fade_from: str | None = None
         self.fade_start = 0.0
         self.player: LoopPlayer | None = None
+        self.loop_sil: Silhouette | None = None
+        self.loop_matcher: guides.PoseMatcher | None = None
         self.toast = self.output.error
         self.toast_until = time.monotonic() + (15 if self.toast else 0)
         self._toggle_requested = threading.Event()
@@ -75,6 +78,13 @@ class App:
         if self.player:
             self.player.close()
         self.player = LoopPlayer(path, (self.cfg.width, self.cfg.height))
+        # Start-pose silhouette + matcher, so LIVE preview shows when a cut to the loop will be invisible.
+        self.loop_sil = Silhouette.load(path + ".mask.png") if os.path.exists(path + ".mask.png") else None
+        first = self.player.first_frame
+        self.loop_matcher = None
+        if first is not None:
+            weight = self.loop_sil.weight_small if self.loop_sil else None
+            self.loop_matcher = guides.PoseMatcher(first, weight=weight)
         self.notify(f"Loop loaded: {os.path.basename(path)}")
 
     def _start_global_hotkey(self) -> None:
@@ -164,9 +174,15 @@ class App:
         # While recording, the preview shows the live camera (what's being recorded).
         base = live if recording else out
         prev = cv2.flip(base, 1) if cfg.mirror_preview else base.copy()
-        if cfg.show_guides and (recording or self.mode == "live"):
-            guides.draw_dot_grid(prev)
-        prev = self.recorder.draw(prev, cfg.mirror_preview)
+        if recording or self.recorder.state == State.PROCESSING:
+            prev = self.recorder.draw(prev, cfg.mirror_preview)
+        elif cfg.show_guides and self.mode == "live" and self.loop_matcher is not None:
+            # Line up with the loop's start pose before cutting to it.
+            glow = glow_amount(self.loop_matcher.update(live))
+            if self.loop_sil is not None:
+                self.loop_sil.draw(prev, cfg.mirror_preview, glow)
+            if glow >= 0.99:
+                guides.put_text(prev, "In start pose - cut is seamless", (12, 60), 0.7, (80, 255, 80))
 
         h, w = prev.shape[:2]
         tag, color = ("LIVE", (0, 170, 0)) if self.mode == "live" else ("LOOP", (0, 0, 210))
@@ -175,7 +191,7 @@ class App:
         if not recording:
             fade = f"crossfade {cfg.crossfade_ms}ms" if cfg.crossfade_ms else "hard cut"
             guides.put_text(prev, f"SPACE/{cfg.hotkey.strip('<>').upper()} cut ({fade})  R record  "
-                                  f"G dots  X fade  Q quit", (12, h - 14), 0.5)
+                                  f"G silhouette  X fade  Q quit", (12, h - 14), 0.5)
         msg = self.recorder.message if self.recorder.state == State.PROCESSING else ""
         if not msg and time.monotonic() < self.toast_until:
             msg = self.toast
