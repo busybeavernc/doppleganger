@@ -46,13 +46,19 @@ class PersonSegmenter:
         m = result.confidence_masks[0].numpy_view()
         return np.ascontiguousarray(m.reshape(m.shape[0], m.shape[1]), dtype=np.float32)
 
-    def refine(self, prob: np.ndarray, frame: np.ndarray, width: int = EDGE_WIDTH) -> np.ndarray:
-        """Upscale the mask to `width` and snap its edges to the picture (guided filter)."""
+    def refine(self, prob: np.ndarray, frame: np.ndarray, width: int = EDGE_WIDTH, steady: bool = False) -> np.ndarray:
+        """Upscale the mask to `width` and snap its edges to the picture (guided filter).
+        steady=True (live outlines): gentler snapping, so webcam noise doesn't wiggle the edge."""
         h = round(frame.shape[0] * width / frame.shape[1])
         p = cv2.resize(prob, (width, h), interpolation=cv2.INTER_LINEAR)
         if self._has_guided:
             guide = cv2.resize(frame, (width, h), interpolation=cv2.INTER_AREA)
-            p = cv2.ximgproc.guidedFilter(guide=guide, src=p, radius=6, eps=1e-3)
+            if steady:
+                guide = cv2.GaussianBlur(guide, (0, 0), 1.0)  # ignore sensor noise
+            p = cv2.ximgproc.guidedFilter(guide=guide, src=p, radius=8 if steady else 6,
+                                          eps=2e-2 if steady else 1e-3)
+        if steady:
+            p = cv2.GaussianBlur(p, (0, 0), 1.2)
         return np.clip(p, 0.0, 1.0)
 
     def mask(self, frame: np.ndarray, width: int = EDGE_WIDTH) -> np.ndarray:
@@ -67,17 +73,25 @@ class PersonSegmenter:
 
 
 class SmoothedStream:
-    """Per-stream temporal smoothing (live camera, loop...): steadier outlines, same responsiveness."""
+    """Per-stream temporal smoothing (live camera, loop...).
 
-    def __init__(self, segmenter: PersonSegmenter, keep: float = 0.45):
+    Adaptive: while you hold still it averages over many frames (rock-steady
+    outline); when you actually move, it follows almost immediately.
+    """
+
+    STILL_KEEP, MOVING_KEEP = 0.85, 0.25
+
+    def __init__(self, segmenter: PersonSegmenter):
         self.seg = segmenter
-        self.keep = keep
         self._prob: np.ndarray | None = None
 
     def probability(self, frame: np.ndarray) -> np.ndarray:
         p = self.seg.probability(frame)
         if self._prob is not None and self._prob.shape == p.shape:
-            p = self.keep * self._prob + (1 - self.keep) * p
+            change = float(np.mean(np.abs(p - self._prob)))  # ~0.005 = noise, >0.03 = real movement
+            t = float(np.clip((change - 0.008) / 0.025, 0.0, 1.0))
+            keep = self.STILL_KEEP + (self.MOVING_KEEP - self.STILL_KEEP) * t
+            p = keep * self._prob + (1 - keep) * p
         self._prob = p
         return p
 

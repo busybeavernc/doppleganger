@@ -60,8 +60,9 @@ def installed_version() -> str | None:
     if not os.path.exists(path):
         return None
     try:
-        with open(os.path.join(install_dir(), "version.txt"), encoding="utf-8") as f:
-            return f.read().strip() or "0"
+        with open(os.path.join(install_dir(), "version.txt"), encoding="utf-8", errors="ignore") as f:
+            v = f.read().strip()
+        return v if v.isdigit() else "0"  # older builds wrote a broken stamp: treat as outdated
     except OSError:
         return "0"
 
@@ -72,12 +73,22 @@ def needs_install() -> bool:
 
 # ---------- install / remove (one elevated step each) ----------
 
+def elevated_script(body: str, marker: str) -> str:
+    """Batch text that runs `body` as a subroutine and ALWAYS records its exit code in `marker`
+    (the body may `exit /b` early - that only leaves the subroutine, not the script)."""
+    return ("@echo off\r\n"
+            "call :main\r\n"
+            f'(echo %ERRORLEVEL%)> "{marker}"\r\n'
+            "exit /b\r\n"
+            ":main\r\n" + body + "\r\nexit /b 0\r\n")
+
+
 def _run_elevated_script(body: str, timeout: float = 120.0) -> tuple[bool, str]:
     """Run a batch script as administrator (Windows shows its permission prompt) and wait for it."""
     tmp = tempfile.mkdtemp(prefix="doppleganger_")
     script, marker = os.path.join(tmp, "run.bat"), os.path.join(tmp, "result.txt")
     with open(script, "w", encoding="utf-8") as f:
-        f.write("@echo off\r\n" + body + f'\r\necho %ERRORLEVEL% > "{marker}"\r\n')
+        f.write(elevated_script(body, marker))
     rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f'/c "{script}"', None, 0)
     if rc <= 32:
         return False, "Permission was not granted."
@@ -107,7 +118,7 @@ def install() -> tuple[bool, str]:
     lines.append(f'"{sysroot}\\System32\\regsvr32.exe" /s "{dst}\\{DLL64}" || exit /b 2')
     if os.path.exists(os.path.join(src, DLL32)):
         lines.append(f'"{sysroot}\\SysWOW64\\regsvr32.exe" /s "{dst}\\{DLL32}"')
-    lines.append(f'echo {DRIVER_VERSION}> "{dst}\\version.txt"')
+    lines.append(f'(echo {DRIVER_VERSION})> "{dst}\\version.txt"')
     lines.append("exit /b 0")
     return _run_elevated_script("\r\n".join(lines))
 

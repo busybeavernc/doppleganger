@@ -27,7 +27,7 @@ class FakeSegmenter:
         p = cv2.resize(truth.astype(np.float32), (256, 144), interpolation=cv2.INTER_AREA)
         return cv2.GaussianBlur(p, (0, 0), 2)
 
-    def refine(self, prob, frame, width=480):
+    def refine(self, prob, frame, width=480, steady=False):
         h = round(frame.shape[0] * width / frame.shape[1])
         return cv2.resize(prob, (width, h), interpolation=cv2.INTER_LINEAR)
 
@@ -84,3 +84,23 @@ def test_real_model_loads_and_runs():
     r = seg.refine(p, frame, 480)
     assert r.shape == (270, 480)
     seg.close()
+
+
+def test_outline_is_steady_when_still_and_follows_movement():
+    """Noise alone must not wiggle the outline; a real move must show up within a few frames."""
+    seg = FakeSegmenter()
+    tr = OutlineTracer(segmenter=seg)
+    rng = np.random.default_rng(0)
+    base, _, _ = frame_at(0)
+    shapes = []
+    for _ in range(12):
+        noisy = np.clip(base.astype(np.int16) + rng.normal(0, 5, base.shape), 0, 255).astype(np.uint8)
+        noisy[0, 0, 2] = 100  # keep the FakeSegmenter offset tag
+        m = np.zeros((360, 640), np.uint8)
+        cv2.fillPoly(m, [tr.contour(noisy, (640, 360), False)], 255)
+        shapes.append(m > 0)
+    flicker = max(np.logical_xor(a, b).sum() for a, b in zip(shapes[4:], shapes[5:]))
+    assert flicker <= 40, flicker
+    still_x = tr.contour(base, (640, 360), False)[..., 0].mean()
+    moved = [tr.contour(frame_at(80)[0], (640, 360), False)[..., 0].mean() for _ in range(4)]
+    assert moved[-1] - still_x > 60      # followed the 80 px move within 4 frames

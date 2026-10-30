@@ -477,7 +477,8 @@ class Engine:
         size = (prev.shape[1], prev.shape[0])
         mirrored = self.cfg.mirror_preview
         if other is not None:
-            outline.draw(prev, self._tracer.contour(other, size, mirrored, "other"), brand.CV_VIOLET)
+            # the loop as a soft violet shape, you as an aqua line on top: in sync = line on the shape's edge
+            outline.draw_shape(prev, self._tracer.contour(other, size, mirrored, "other"), brand.CV_VIOLET)
         outline.draw(prev, self._tracer.contour(live, size, mirrored, "live"), brand.CV_AQUA)
         h = prev.shape[0]
         x = 14 + guides.put_text(prev, "you", (14, h - 14), 0.45, brand.CV_AQUA, bold=True)

@@ -21,6 +21,8 @@ class OutlineTracer:
     def __init__(self, background: np.ndarray | None = None, segmenter=None):
         self.segmenter = segmenter
         self._streams: dict = {}
+        self._cache: dict = {}
+        self._prev_mask: dict = {}
         if segmenter is not None or background is None:
             self.size = None
             return
@@ -36,8 +38,16 @@ class OutlineTracer:
         if self.segmenter is not None:
             from .segment import SmoothedStream
             st = self._streams.setdefault(stream, SmoothedStream(self.segmenter))
-            p = self.segmenter.refine(st.probability(frame), frame, TRACE_WIDTH)
-            return (p > 0.5).astype(np.uint8) * 255
+            p = self.segmenter.refine(st.probability(frame), frame, TRACE_WIDTH, steady=True)
+            # Hysteresis: an edge pixel only flips when the model is clearly sure, so borderline
+            # pixels don't flicker in and out from frame to frame.
+            prev = self._prev_mask.get(stream)
+            if prev is not None and prev.shape == p.shape:
+                m = (p > 0.62) | (prev & (p > 0.38))
+            else:
+                m = p > 0.5
+            self._prev_mask[stream] = m
+            return m.astype(np.uint8) * 255
         lab = cv2.cvtColor(cv2.resize(frame, self.size, interpolation=cv2.INTER_AREA),
                            cv2.COLOR_BGR2LAB).astype(np.float32)
         d = lab - self.bg_lab
@@ -52,6 +62,15 @@ class OutlineTracer:
     def contour(self, frame: np.ndarray, out_size: tuple[int, int], mirrored: bool,
                 stream: str = "live") -> np.ndarray | None:
         """Outline of the largest person-shaped blob, in preview pixel coordinates."""
+        key = (id(frame), out_size, mirrored)
+        cached = self._cache.get(stream)
+        if cached is not None and cached[0] == key:  # same still frame (e.g. the loop's first frame)
+            return cached[1]
+        c = self._contour(frame, out_size, mirrored, stream)
+        self._cache[stream] = (key, c)
+        return c
+
+    def _contour(self, frame, out_size, mirrored, stream):
         m = self.mask(frame, stream)
         contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         if not contours:
@@ -59,13 +78,48 @@ class OutlineTracer:
         c = max(contours, key=cv2.contourArea)
         if cv2.contourArea(c) < 0.03 * m.shape[0] * m.shape[1]:
             return None
-        c = cv2.approxPolyDP(c, 1.0, True).astype(np.float32)
+        c = smooth_curve(c.reshape(-1, 2).astype(np.float32)).reshape(-1, 1, 2)
         sx, sy = out_size[0] / m.shape[1], out_size[1] / m.shape[0]
         c[..., 0] *= sx
         c[..., 1] *= sy
         if mirrored:
             c[..., 0] = out_size[0] - 1 - c[..., 0]
         return c.astype(np.int32)
+
+
+def smooth_curve(pts: np.ndarray, sigma: float = 4.0) -> np.ndarray:
+    """Turn a pixel-stepped outline into a smooth, flowing curve.
+
+    The dense outline is smoothed along its own length (circular Gaussian), which
+    removes pixel stair-steps and small bumps while keeping the overall shape,
+    then lightly simplified and rounded so it draws as a clean curve."""
+    n = len(pts)
+    if n >= 12:
+        r = int(3 * sigma)
+        k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+        k /= k.sum()
+        padded = np.concatenate([pts[-r:], pts, pts[:r]])
+        pts = np.stack([np.convolve(padded[:, i], k, mode="valid") for i in (0, 1)], axis=1)
+    pts = cv2.approxPolyDP(pts.astype(np.float32).reshape(-1, 1, 2), 0.6, True).reshape(-1, 2).astype(np.float32)
+    return _chaikin(pts, 2)
+
+
+def _chaikin(pts: np.ndarray, rounds: int) -> np.ndarray:
+    """Round off a closed polygon's corners (Chaikin): smooth, natural-looking outline."""
+    for _ in range(rounds):
+        nxt = np.roll(pts, -1, axis=0)
+        pts = np.stack([0.75 * pts + 0.25 * nxt, 0.25 * pts + 0.75 * nxt], axis=1).reshape(-1, 2)
+    return pts
+
+
+def draw_shape(img: np.ndarray, contour: np.ndarray | None, color, alpha: float = 0.22) -> None:
+    """Translucent filled shape with a thin edge (the loop): stays visible under the live line."""
+    if contour is None:
+        return
+    overlay = img.copy()
+    cv2.fillPoly(overlay, [contour], color, cv2.LINE_AA)
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, dst=img)
+    cv2.polylines(img, [contour], True, color, 2, cv2.LINE_AA)
 
 
 def draw(img: np.ndarray, contour: np.ndarray | None, color, thickness: int = 2) -> None:
