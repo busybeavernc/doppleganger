@@ -63,12 +63,13 @@ class OutlineTracer:
     def contour(self, frame: np.ndarray, out_size: tuple[int, int], mirrored: bool,
                 stream: str = "live") -> np.ndarray | None:
         """Outline of the largest person-shaped blob, in preview pixel coordinates."""
-        key = (id(frame), out_size, mirrored)
+        # Same still frame as last time (e.g. the loop's first frame)? Compare the object itself -
+        # the cache holds a reference, so a new frame can never reuse its memory address.
         cached = self._cache.get(stream)
-        if cached is not None and cached[0] == key:  # same still frame (e.g. the loop's first frame)
-            return cached[1]
+        if cached is not None and cached[0] is frame and cached[1] == (out_size, mirrored):
+            return cached[2]
         c = self._contour(frame, out_size, mirrored, stream)
-        self._cache[stream] = (key, c)
+        self._cache[stream] = (frame, (out_size, mirrored), c)
         return c
 
     def _contour(self, frame, out_size, mirrored, stream):

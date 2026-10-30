@@ -44,7 +44,9 @@ class PersonSegmenter:
         with self._lock:
             result = self._seg.segment(img)
         m = result.confidence_masks[0].numpy_view()
-        return np.ascontiguousarray(m.reshape(m.shape[0], m.shape[1]), dtype=np.float32)
+        # COPY: numpy_view() points into MediaPipe's own buffer, which is freed/reused once
+        # `result` goes away (on Windows immediately - outlines then vanished after one frame).
+        return np.array(m.reshape(m.shape[0], m.shape[1]), dtype=np.float32, copy=True)
 
     def refine(self, prob: np.ndarray, frame: np.ndarray, width: int = EDGE_WIDTH, steady: bool = False) -> np.ndarray:
         """Upscale the mask to `width` and snap its edges to the picture (guided filter).

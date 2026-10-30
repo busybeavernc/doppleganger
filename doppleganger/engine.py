@@ -511,7 +511,7 @@ class Engine:
             self._outline_log_at = now
             log.info("Outlines: preview %dx%d, live %s, loop %s, %s", size[0], size[1],
                      "drawn" if live_c is not None else "MISSING",
-                     "n/a" if other is None else ("drawn" if self._tracer._cache.get("other", (0, None))[1]
+                     "n/a" if other is None else ("drawn" if self._tracer._cache.get("other", (0, 0, None))[2]
                                                   is not None else "MISSING"),
                      self._tracer.stats)
         h = prev.shape[0]
