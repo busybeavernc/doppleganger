@@ -26,9 +26,11 @@ from .player import LoopPlayer, latest_loop
 from . import updater
 from .recorder import Recorder, State
 from .tray import start_tray
+from .calibrate import Calibrator
 from .silhouette import Silhouette, glow_amount
 
 WINDOW = "Doppleganger"
+BACKGROUND_FILE = "background.png"  # calibrated empty room, next to the app
 log = logging.getLogger("doppleganger")
 
 
@@ -121,6 +123,11 @@ class App:
         self._actions: queue.Queue[str] = queue.Queue()  # from hotkey, tray menu, update thread
         self._pending_update: str | None = None
         self._updating = False
+        self.calibrator: Calibrator | None = None
+        self._record_after_calibration = False
+        self.background = (cv2.imread(BACKGROUND_FILE, cv2.IMREAD_UNCHANGED)
+                           if os.path.exists(BACKGROUND_FILE) else None)
+        self.recorder.background = self.background
         path = latest_loop(cfg.loops_dir)
         if path:
             self._load_loop(path)
@@ -139,9 +146,13 @@ class App:
         first = self.player.first_frame
         self.loop_matcher = None
         if first is not None:
-            weight = self.loop_sil.weight_small if self.loop_sil else None
-            self.loop_matcher = guides.PoseMatcher(first, weight=weight)
+            self._make_loop_matcher()
         self.notify(f"Loop loaded: {os.path.basename(path)}")
+
+    def _make_loop_matcher(self) -> None:
+        self.loop_matcher = guides.PoseMatcher(self.player.first_frame, background=self.background)
+        if self.loop_sil is not None:
+            self.loop_matcher.set_silhouette(self.loop_sil)
 
     def _start_global_hotkey(self) -> None:
         try:
@@ -173,7 +184,40 @@ class App:
     def record(self) -> None:
         if self.mode == "loop":
             self.notify("Cut back to LIVE before recording.")
+        elif self.calibrator is not None:
+            pass
+        elif self.background is None:
+            # First recording: calibrate the silhouette first, then record automatically.
+            self.calibrate(then_record=True)
         else:
+            self.recorder.start()
+
+    def calibrate(self, then_record: bool = False) -> None:
+        if self.mode == "loop" or self.recorder.state != State.IDLE:
+            self.notify("Cut back to LIVE (and finish any recording) before calibrating.")
+            return
+        self.calibrator = Calibrator()
+        self._record_after_calibration = then_record
+
+    def _update_calibration(self, live: np.ndarray) -> None:
+        cal = self.calibrator
+        cal.add(live)
+        if not cal.done():
+            return
+        self.calibrator = None
+        bg = cal.background()
+        if bg is None or cal.coverage < 0.6:
+            self.notify("Calibration didn't see enough of the room - press C to try again "
+                        "(keep your face visible while you lean).", 10)
+            return
+        cv2.imwrite(BACKGROUND_FILE, bg)
+        self.background = bg
+        self.recorder.background = bg
+        if self.player is not None and self.player.first_frame is not None:
+            self._make_loop_matcher()
+        self.notify(f"Silhouette calibrated ({int(cal.coverage * 100)}% of the room seen).", 6)
+        log.info("Calibrated background, coverage %.2f", cal.coverage)
+        if self._record_after_calibration:
             self.recorder.start()
 
     def check_for_updates(self) -> None:
@@ -212,6 +256,8 @@ class App:
                 self.toggle()
             elif a == "record":
                 self.record()
+            elif a == "calibrate":
+                self.calibrate()
             elif a == "update":
                 self.check_for_updates()
             elif a == "quit":
@@ -240,6 +286,8 @@ class App:
                 fresh = self.camera.latest()
                 if fresh is not None:
                     live = fresh
+                if self.calibrator is not None:
+                    self._update_calibration(live)
                 self.recorder.update(live)
                 if self.recorder.result_path:
                     self._load_loop(self.recorder.result_path)
@@ -279,6 +327,7 @@ class App:
         cfg = self.cfg
         other = loop_frame if self.mode == "live" else live
         ghost = cv2.flip(other, 1) if cfg.mirror_preview else other
+        ghost = cv2.resize(ghost, (prev.shape[1], prev.shape[0]), interpolation=cv2.INTER_AREA)
         prev = cv2.addWeighted(prev, 1 - cfg.overlay_opacity, ghost, cfg.overlay_opacity, 0)
         weight = self.loop_sil.weight_small if self.loop_sil is not None else None
         diff = guides.frame_diff(guides.small_gray(live), guides.small_gray(loop_frame), weight)
@@ -291,6 +340,39 @@ class App:
         else:
             guides.put_text(prev, f"Faded: {label}  (sync {int(self._sync * 100)}%)", (12, 60), 0.6)
         return prev
+
+    def _display_size(self, w: int, h: int) -> tuple[int, int]:
+        try:
+            _, _, ww, wh = cv2.getWindowImageRect(WINDOW)
+        except cv2.error:
+            ww = wh = 0
+        if ww < 200 or wh < 120:
+            return 960, int(960 * h / w)
+        s = min(ww / w, wh / h)
+        return max(2, int(w * s)), max(2, int(h * s))
+
+    def _draw_calibration(self, prev: np.ndarray) -> None:
+        cal = self.calibrator
+        h, w = prev.shape[:2]
+        mirrored = self.cfg.mirror_preview
+        if cal.seen is not None:  # tint the parts of the room not seen yet
+            unseen = (~cal.seen).astype(np.uint8) * 255
+            unseen = cv2.resize(cv2.flip(unseen, 1) if mirrored else unseen, (w, h), interpolation=cv2.INTER_LINEAR)
+            a = cv2.GaussianBlur(unseen, (0, 0), 3).astype(np.float32)[..., None] / 255.0 * 0.45
+            prev[:] = (prev * (1 - a) + np.array([40, 40, 200], np.float32) * a).astype(np.uint8)
+        need = cal.side_needed()
+        if need is None:
+            guides.banner(prev, "Got it - come back to the center", (0, 130, 0))
+        else:
+            # The uncovered side shows on the opposite side in a mirrored preview.
+            screen_side = ({"left": "right", "right": "left"}[need]) if mirrored else need
+            move = "LEFT" if screen_side == "right" else "RIGHT"
+            guides.banner(prev, f"Calibrating - lean or step slowly to your {move}", (150, 90, 0))
+        guides.put_text(prev, "Keep facing the camera. Red areas haven't been seen yet.", (20, h - 120), 0.5)
+        guides.draw_meter(prev, f"Room seen {int(cal.coverage * 100)}%", cal.coverage / cal.target, h - 95)
+        if not cal.face_visible:
+            guides.put_text(prev, "Can't see your face - turn toward the camera", (20, h - 145), 0.6, (90, 90, 255))
+        guides.put_text(prev, "Esc = cancel", (w - 130, h - 80), 0.45)
 
     def _draw_output_status(self, prev: np.ndarray) -> None:
         """Always-visible: is the picture actually reaching Zoom?"""
@@ -307,8 +389,12 @@ class App:
         recording = self.recorder.state in (State.COUNTDOWN, State.RECORDING)
         # While recording, the preview shows the live camera (what's being recorded).
         base = live if recording else out
-        prev = cv2.flip(base, 1) if cfg.mirror_preview else base.copy()
-        if recording or self.recorder.state == State.PROCESSING:
+        prev = cv2.flip(base, 1) if cfg.mirror_preview else base
+        # Draw everything at the window's real size, so text and edges stay crisp.
+        prev = cv2.resize(prev, self._display_size(prev.shape[1], prev.shape[0]), interpolation=cv2.INTER_AREA)
+        if self.calibrator is not None:
+            self._draw_calibration(prev)
+        elif recording or self.recorder.state == State.PROCESSING:
             prev = self.recorder.draw(prev, cfg.mirror_preview)
         elif cfg.show_guides and self.loop_running and loop_frame is not None:
             prev = self._draw_offair_overlay(prev, live, loop_frame)
@@ -319,16 +405,18 @@ class App:
                 self.loop_sil.draw(prev, cfg.mirror_preview, glow)
             if glow >= 0.99:
                 guides.put_text(prev, "In start pose - cut is seamless", (12, 60), 0.7, (80, 255, 80))
+            if self.background is None:
+                guides.put_text(prev, "Tip: press C to calibrate the silhouette for a sharper outline",
+                                (12, 90), 0.5, (200, 230, 255))
 
         h, w = prev.shape[:2]
-        tag, color = ("LIVE", (0, 170, 0)) if self.mode == "live" else ("LOOP", (0, 0, 210))
-        cv2.rectangle(prev, (w - 120, 10), (w - 10, 50), color, -1)
-        guides.put_text(prev, tag, (w - 100, 42), 0.9)
+        tag, color = ("LIVE", (0, 160, 0)) if self.mode == "live" else ("LOOP", (0, 0, 200))
+        guides.pill(prev, tag, w - 10, 10, color)
         self._draw_output_status(prev)
         if not recording:
             fade = f"crossfade {cfg.crossfade_ms}ms" if cfg.crossfade_ms else "hard cut"
             guides.put_text(prev, f"SPACE/{cfg.hotkey.strip('<>').upper()} cut ({fade})  R record  "
-                                  f"G silhouette  X fade  U update  Q quit", (12, h - 14), 0.5)
+                                  f"C calibrate  G guides  X fade  U update  Q quit", (12, h - 14), 0.5)
         msg = self.recorder.message if self.recorder.state == State.PROCESSING else ""
         if not msg and time.monotonic() < self.toast_until:
             msg = self.toast
@@ -350,6 +438,11 @@ class App:
             self.check_for_updates()
         elif key == 27:
             self.recorder.cancel()
+        elif key in (ord("c"), ord("C")):
+            self.calibrate()
+        elif key == 27 and self.calibrator is not None:
+            self.calibrator = None
+            self.notify("Calibration cancelled.")
         elif key in (ord("e"), ord("E")):
             self.recorder.end_now()
         elif key in (ord("g"), ord("G")):

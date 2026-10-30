@@ -21,6 +21,7 @@ def start_tray(request: Callable[[str], None], version: str):
     menu = pystray.Menu(
         item("Cut LIVE / LOOP", lambda: request("toggle"), default=True),
         item("Record new loop", lambda: request("record")),
+        item("Calibrate silhouette", lambda: request("calibrate")),
         pystray.Menu.SEPARATOR,
         item("Check for updates", lambda: request("update")),
         item(f"Version {version}", None, enabled=False),

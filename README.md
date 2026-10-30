@@ -22,6 +22,14 @@ No Python or VS Code is needed. Every change pushed to `main` is built automatic
 ### Run from source instead
 Install Python 3.10+, then double-click `run.bat`. It creates a `.venv` and installs the requirements on the first run.
 
+## Calibrating the silhouette (once per room)
+
+The first time you press **R**, Doppleganger runs a ~10-second calibration before recording. You can redo it any time with **C** or the tray menu's *Calibrate silhouette*, e.g. after moving the camera or changing the lighting.
+
+Keep facing the camera and lean or step slowly to the side the banner asks for. Red tint marks parts of the room it hasn't seen yet; it fades as you uncover them. It switches sides for you and finishes on its own once about 97% of the room has been seen.
+
+This teaches the app what the empty room looks like (saved as `background.png`). Your silhouette is then cut out by comparing against it, so the outline follows your hair, shoulders and arms instead of guessing, and the green "matched" glow is judged by how well your body shape overlaps the silhouette. Without a calibration it still works, with a rougher outline.
+
 ## Recording a loop
 
 Press **R** while LIVE. Then:
@@ -47,12 +55,13 @@ Loops are saved in `loops/`. The newest one loads automatically.
 | Key | Action |
 |---|---|
 | **F9** (works even while Zoom is focused) or **Space** | Cut LIVE ↔ LOOP |
+| C | Calibrate the silhouette (see above) |
 | G | Show/hide the silhouette / off-air overlay (preview only, never sent to Zoom) |
 | X | Toggle a 300 ms crossfade on cuts (**off by default** – hard cuts) |
 | U | Check for updates |
 | Q | Quit |
 
-The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Record new loop, Check for updates, Quit.
+The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Record new loop, Calibrate silhouette, Check for updates, Quit.
 
 **First cut to the loop:** the loop starts at its first frame (your start pose). Before that first cut, the LIVE preview shows the start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut.
 
