@@ -136,6 +136,7 @@ class MainWindow:
         self.wizard: Wizard | None = None
         self.settings: SettingsWindow | None = None
         self._build()
+        self._no_button_focus(self.root)
         self._bind_keys()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -242,9 +243,23 @@ class MainWindow:
         self.status = tk.Label(r, text="", anchor="w", padx=14, pady=5, bg=SURFACE, fg=CLOUD, font=(FONT, 9))
         self.status.grid(row=1, column=0, columnspan=2, sticky="ew")
 
+    @staticmethod
+    def _no_button_focus(widget) -> None:
+        """Buttons don't keep keyboard focus after a click, so keys always go to the app's shortcuts."""
+        for w in widget.winfo_children():
+            if isinstance(w, (ttk.Button, ttk.Checkbutton, tk.Button, tk.Checkbutton, ttk.Scale)):
+                w.configure(takefocus=0)
+            MainWindow._no_button_focus(w)
+
     # ---------- keys (hold-capable Space) ----------
     def _bind_keys(self) -> None:
         r = self.root
+        # Space means CUT everywhere. Tk buttons/checkboxes normally also "press" themselves on
+        # Space when focused (e.g. Record right after you clicked it) - switch that off.
+        for cls in ("TButton", "TCheckbutton", "TRadiobutton", "Button", "Checkbutton", "Radiobutton",
+                    "TCombobox", "Treeview", "TScale"):
+            r.bind_class(cls, "<KeyPress-space>", lambda _e: None)
+            r.bind_class(cls, "<KeyRelease-space>", lambda _e: None)
         r.bind_all("<KeyPress-space>", self._space_down)
         r.bind_all("<KeyRelease-space>", self._space_up)
         keys = {"r": "record", "b": "glitch", "c": "calibrate", "e": "end_recording", "u": "update", "k": "camera:"}
@@ -544,6 +559,7 @@ class SettingsWindow:
         ttk.Button(up, text="Check now", command=lambda: self.e.request("update")).pack(side="right")
         ttk.Button(f, text="Done", style="Accent.TButton", command=self.close).grid(sticky="e", pady=(16, 0))
         self.refresh()
+        MainWindow._no_button_focus(self.win)
         self.win.after(150, main.apply_capture_setting)
 
     def _changed(self) -> None:
@@ -632,6 +648,7 @@ class MiniBar:
         self.win.bind("<KeyPress-space>", main._space_down)
         self.win.bind("<KeyRelease-space>", main._space_up)
         self._place()
+        MainWindow._no_button_focus(self.win)
 
     def _place(self) -> None:
         pos = self.main.cfg.mini_bar_pos
@@ -758,6 +775,7 @@ class Wizard:
     def render(self):
         self._clear()
         getattr(self, f"_page_{self.STEPS[self.step]}")()
+        MainWindow._no_button_focus(self.win)
         self.dots.configure(text="  ".join("●" if i == self.step else "○" for i in range(len(self.STEPS))))
         self.back_btn.configure(state="normal" if self.step else "disabled")
         last = self.step == len(self.STEPS) - 1
