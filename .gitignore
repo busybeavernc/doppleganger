@@ -9,3 +9,4 @@ build/
 *.spec
 doppleganger-error.log
 doppleganger/_build.py
+doppleganger.log

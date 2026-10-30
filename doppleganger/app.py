@@ -10,6 +10,7 @@ Keys (preview window focused):
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import queue
 import threading
@@ -28,31 +29,76 @@ from .tray import start_tray
 from .silhouette import Silhouette, glow_amount
 
 WINDOW = "Doppleganger"
+log = logging.getLogger("doppleganger")
 
 
 class Output:
-    """Virtual camera (OBS Virtual Camera driver) with a graceful fallback."""
+    """Sends frames to the OBS Virtual Camera driver.
+
+    If it can't connect (OBS not installed, or OBS's own virtual camera is already
+    running and holding the camera), it keeps retrying every few seconds and the
+    preview shows why, so the problem is never silent.
+    """
+
+    RETRY_SECONDS = 3.0
 
     def __init__(self, cfg: Config, enabled: bool):
+        self.cfg = cfg
+        self.enabled = enabled
         self.cam = None
-        self.error = ""
-        if not enabled:
-            return
+        self.error = "" if enabled else "Virtual camera disabled (--no-vcam)"
+        self.device = ""
+        self._next_try = 0.0
+        self._last_logged = ""
+        self._connect()
+
+    def _connect(self) -> None:
+        self._next_try = time.monotonic() + self.RETRY_SECONDS
         try:
             import pyvirtualcam
-            self.cam = pyvirtualcam.Camera(cfg.width, cfg.height, cfg.fps,
+            self.cam = pyvirtualcam.Camera(self.cfg.width, self.cfg.height, self.cfg.fps,
                                            fmt=pyvirtualcam.PixelFormat.BGR, backend="obs")
+            self.device, self.error = self.cam.device, ""
+            log.info("Virtual camera connected: %s", self.device)
         except Exception as e:  # noqa: BLE001
-            self.error = (f"Virtual camera unavailable ({e}). Install OBS Studio and make sure "
-                          "OBS's own 'Start Virtual Camera' is OFF.")
+            self.cam = None
+            self.error = _explain_vcam_error(str(e))
+            if self.error != self._last_logged:  # log each distinct problem once
+                log.warning("Virtual camera not connected: %s", e)
+                self._last_logged = self.error
+
+    @property
+    def connected(self) -> bool:
+        return self.cam is not None
 
     def send(self, frame: np.ndarray) -> None:
-        if self.cam:
+        if self.cam is None:
+            if self.enabled and time.monotonic() >= self._next_try:
+                self._connect()
+            return
+        try:
             self.cam.send(frame)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Virtual camera send failed: %s", e)
+            self.close()
+            self.error = "Lost connection to OBS Virtual Camera - reconnecting..."
 
     def close(self) -> None:
         if self.cam:
-            self.cam.close()
+            try:
+                self.cam.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.cam = None
+
+
+def _explain_vcam_error(msg: str) -> str:
+    m = msg.lower()
+    if "not installed" in m:
+        return "OBS Virtual Camera driver not found - install OBS Studio (it doesn't need to be open)"
+    if "could not be started" in m or "in use" in m or "already" in m:
+        return "OBS Virtual Camera is busy - in OBS click 'Stop Virtual Camera' (or close OBS)"
+    return f"Virtual camera not connected: {msg}"
 
 
 class App:
@@ -70,8 +116,8 @@ class App:
         self.loop_matcher: guides.PoseMatcher | None = None
         self.loop_running = False   # becomes True on the first cut to the loop
         self._sync = 0.0            # how well live and the current loop frame line up
-        self.toast = self.output.error
-        self.toast_until = time.monotonic() + (15 if self.toast else 0)
+        self.toast = ""
+        self.toast_until = 0.0
         self._actions: queue.Queue[str] = queue.Queue()  # from hotkey, tray menu, update thread
         self._pending_update: str | None = None
         self._updating = False
@@ -246,6 +292,16 @@ class App:
             guides.put_text(prev, f"Faded: {label}  (sync {int(self._sync * 100)}%)", (12, 60), 0.6)
         return prev
 
+    def _draw_output_status(self, prev: np.ndarray) -> None:
+        """Always-visible: is the picture actually reaching Zoom?"""
+        h, w = prev.shape[:2]
+        if self.output.connected:
+            cv2.circle(prev, (w - 228, 74), 7, (60, 220, 60), -1, cv2.LINE_AA)
+            guides.put_text(prev, "Sending to OBS Virtual Camera", (w - 214, 80), 0.45)
+        else:
+            cv2.rectangle(prev, (0, h - 64), (w, h - 34), (30, 30, 190), -1)
+            guides.put_text(prev, "NOT SENDING TO ZOOM: " + self.output.error, (10, h - 42), 0.5)
+
     def _ui(self, out: np.ndarray, live: np.ndarray, loop_frame: np.ndarray | None) -> bool:
         cfg = self.cfg
         recording = self.recorder.state in (State.COUNTDOWN, State.RECORDING)
@@ -268,6 +324,7 @@ class App:
         tag, color = ("LIVE", (0, 170, 0)) if self.mode == "live" else ("LOOP", (0, 0, 210))
         cv2.rectangle(prev, (w - 120, 10), (w - 10, 50), color, -1)
         guides.put_text(prev, tag, (w - 100, 42), 0.9)
+        self._draw_output_status(prev)
         if not recording:
             fade = f"crossfade {cfg.crossfade_ms}ms" if cfg.crossfade_ms else "hard cut"
             guides.put_text(prev, f"SPACE/{cfg.hotkey.strip('<>').upper()} cut ({fade})  R record  "
@@ -327,6 +384,9 @@ def main() -> None:
     ap.add_argument("--no-vcam", action="store_true", help="preview only, no virtual camera")
     args = ap.parse_args()
 
+    logging.basicConfig(filename="doppleganger.log", filemode="w", level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    log.info("Doppleganger v%s starting", updater.current_version())
     cfg = Config.load(args.config)
     if args.camera is not None:
         cfg.camera_index = args.camera
