@@ -23,6 +23,7 @@ class OutlineTracer:
         self._streams: dict = {}
         self._cache: dict = {}
         self._prev_mask: dict = {}
+        self.stats: dict = {}  # per stream, for the log: what the last trace found
         if segmenter is not None or background is None:
             self.size = None
             return
@@ -73,9 +74,13 @@ class OutlineTracer:
     def _contour(self, frame, out_size, mirrored, stream):
         m = self.mask(frame, stream)
         contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        st = {"frame": f"{frame.shape[1]}x{frame.shape[0]}/{frame.dtype}", "mask": f"{m.shape[1]}x{m.shape[0]}",
+              "coverage": round(float((m > 0).mean()), 3), "blobs": len(contours), "area": 0.0}
+        self.stats[stream] = st
         if not contours:
             return None
         c = max(contours, key=cv2.contourArea)
+        st["area"] = round(cv2.contourArea(c) / (m.shape[0] * m.shape[1]), 3)
         if cv2.contourArea(c) < 0.03 * m.shape[0] * m.shape[1]:
             return None
         c = smooth_curve(c.reshape(-1, 2).astype(np.float32)).reshape(-1, 1, 2)

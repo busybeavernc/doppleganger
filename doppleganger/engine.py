@@ -504,7 +504,16 @@ class Engine:
         if other is not None:
             # the loop as a soft violet shape, you as an aqua line on top: in sync = line on the shape's edge
             outline.draw_shape(prev, self._tracer.contour(other, size, mirrored, "other"), brand.CV_VIOLET)
-        outline.draw(prev, self._tracer.contour(live, size, mirrored, "live"), brand.CV_AQUA)
+        live_c = self._tracer.contour(live, size, mirrored, "live")
+        outline.draw(prev, live_c, brand.CV_AQUA)
+        now = time.monotonic()
+        if now - getattr(self, "_outline_log_at", 0.0) > 10.0:  # diagnostics: what the tracer sees
+            self._outline_log_at = now
+            log.info("Outlines: preview %dx%d, live %s, loop %s, %s", size[0], size[1],
+                     "drawn" if live_c is not None else "MISSING",
+                     "n/a" if other is None else ("drawn" if self._tracer._cache.get("other", (0, None))[1]
+                                                  is not None else "MISSING"),
+                     self._tracer.stats)
         h = prev.shape[0]
         x = 14 + guides.put_text(prev, "you", (14, h - 14), 0.45, brand.CV_AQUA, bold=True)
         if other is not None:

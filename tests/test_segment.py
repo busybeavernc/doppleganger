@@ -104,3 +104,34 @@ def test_outline_is_steady_when_still_and_follows_movement():
     still_x = tr.contour(base, (640, 360), False)[..., 0].mean()
     moved = [tr.contour(frame_at(80)[0], (640, 360), False)[..., 0].mean() for _ in range(4)]
     assert moved[-1] - still_x > 60      # followed the 80 px move within 4 frames
+
+
+def _person_frame(dx=0):
+    """A real photo of a person (public-domain portrait), framed like a 1280x720 webcam picture."""
+    img = cv2.imread(os.path.join(os.path.dirname(__file__), "data", "person.jpg"))
+    pad = (img.shape[0] * 16 // 9 - img.shape[1]) // 2
+    f = cv2.copyMakeBorder(img, 0, 0, pad, pad, cv2.BORDER_REPLICATE)
+    f = cv2.resize(f, (1280, 720))
+    return np.roll(f, dx, axis=1)
+
+
+def test_real_model_outlines_a_real_person_in_both_streams():
+    """End to end with the real AI model, like the preview: live + loop outlines, mirrored, many frames."""
+    from doppleganger import segment
+    seg = segment.get()
+    if seg is None:
+        pytest.skip("MediaPipe not available")
+    tr = OutlineTracer(segmenter=seg)
+    rng = np.random.default_rng(1)
+    size = (960, 540)
+    for i in range(12):
+        live = np.clip(_person_frame(4 * i).astype(np.int16) + rng.normal(0, 5, (720, 1280, 3)), 0, 255).astype(np.uint8)
+        loop = _person_frame(-40)
+        for stream, frame in (("other", loop), ("live", live)):
+            c = tr.contour(frame, size, True, stream)
+            assert c is not None, f"no {stream} outline on frame {i}"
+            x, y, w, h = cv2.boundingRect(c)
+            area = cv2.contourArea(c) / (size[0] * size[1])
+            # a person in the middle of the picture - not nothing, not the whole frame
+            assert 0.08 < area < 0.7, f"{stream} outline covers {area:.0%} of the picture"
+            assert w < 0.8 * size[0], f"{stream} outline is as wide as the picture"
