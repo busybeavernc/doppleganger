@@ -139,6 +139,7 @@ def _engine_stub(tmp_path):
     e.calibrator = None
     e._record_after_calibration = False
     e.background = np.zeros((90, 160, 3), np.uint8)
+    e.seg = None
     e.mode = "live"
     e.toast, e.toast_until = "", 0.0
     return e
@@ -158,9 +159,17 @@ def test_record_again_cancels_and_saves_nothing(tmp_path):
     assert "cancelled" in e.toast
 
 
+def test_with_ai_detection_recording_starts_without_calibrating(tmp_path):
+    from doppleganger.recorder import State
+    e = _engine_stub(tmp_path)
+    e.background, e.seg = None, object()
+    e.record()
+    assert e.calibrator is None and e.recorder.state == State.COUNTDOWN
+
+
 def test_esc_cancels_calibration_before_first_recording(tmp_path):
     e = _engine_stub(tmp_path)
-    e.background = None
+    e.background = None  # and no AI detection: calibration runs first
     e.record()  # first recording: calibrate first
     assert e.calibrator is not None and e.recording_active
     e.cancel()

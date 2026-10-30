@@ -1,7 +1,8 @@
 """Live / loop subject outlines for lining up a cut.
 
-Each outline is "what differs from the calibrated empty room", traced at a small
-size (cheap enough for every frame), smoothed, and scaled up to the preview.
+Each outline comes from AI person segmentation (or, as a fallback, "what differs
+from the calibrated empty room"), traced at a small size (cheap enough for every
+frame), smoothed, and scaled up to the preview.
 Live = Aqua, loop = Violet: when the two lines sit on top of each other, you're in sync.
 """
 from __future__ import annotations
@@ -15,7 +16,14 @@ TRACE_WIDTH = 320
 
 
 class OutlineTracer:
-    def __init__(self, background: np.ndarray):
+    """Traces people with AI segmentation when available, otherwise against the calibrated room."""
+
+    def __init__(self, background: np.ndarray | None = None, segmenter=None):
+        self.segmenter = segmenter
+        self._streams: dict = {}
+        if segmenter is not None or background is None:
+            self.size = None
+            return
         bg, known = split_background(background)
         h = round(bg.shape[0] * TRACE_WIDTH / bg.shape[1])
         self.size = (TRACE_WIDTH, h)
@@ -23,8 +31,13 @@ class OutlineTracer:
                                    cv2.COLOR_BGR2LAB).astype(np.float32)
         self.known = cv2.resize(known.astype(np.uint8), self.size, interpolation=cv2.INTER_NEAREST) > 0
 
-    def mask(self, frame: np.ndarray) -> np.ndarray:
+    def mask(self, frame: np.ndarray, stream: str = "live") -> np.ndarray:
         """Person mask (uint8 0/255) at trace size."""
+        if self.segmenter is not None:
+            from .segment import SmoothedStream
+            st = self._streams.setdefault(stream, SmoothedStream(self.segmenter))
+            p = self.segmenter.refine(st.probability(frame), frame, TRACE_WIDTH)
+            return (p > 0.5).astype(np.uint8) * 255
         lab = cv2.cvtColor(cv2.resize(frame, self.size, interpolation=cv2.INTER_AREA),
                            cv2.COLOR_BGR2LAB).astype(np.float32)
         d = lab - self.bg_lab
@@ -36,9 +49,10 @@ class OutlineTracer:
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
         return m
 
-    def contour(self, frame: np.ndarray, out_size: tuple[int, int], mirrored: bool) -> np.ndarray | None:
+    def contour(self, frame: np.ndarray, out_size: tuple[int, int], mirrored: bool,
+                stream: str = "live") -> np.ndarray | None:
         """Outline of the largest person-shaped blob, in preview pixel coordinates."""
-        m = self.mask(frame)
+        m = self.mask(frame, stream)
         contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         if not contours:
             return None
@@ -46,7 +60,7 @@ class OutlineTracer:
         if cv2.contourArea(c) < 0.03 * m.shape[0] * m.shape[1]:
             return None
         c = cv2.approxPolyDP(c, 1.0, True).astype(np.float32)
-        sx, sy = out_size[0] / self.size[0], out_size[1] / self.size[1]
+        sx, sy = out_size[0] / m.shape[1], out_size[1] / m.shape[0]
         c[..., 0] *= sx
         c[..., 1] *= sy
         if mirrored:

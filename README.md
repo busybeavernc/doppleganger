@@ -8,9 +8,8 @@
 2. Doppleganger opens with a short **setup guide**:
    1. **Add the Doppleganger camera.** Windows asks for permission once.
    2. **Choose your webcam.**
-   3. **Calibrate.**
-   4. **Record your first loop.**
-   5. **Pick "Doppleganger" as your camera** in Zoom/Teams.
+   3. **Record your first loop.**
+   4. **Pick "Doppleganger" as your camera** in Zoom/Teams.
 
 You can reopen the guide any time from the *Setup guide* button. OBS Studio is not needed.
 
@@ -29,7 +28,7 @@ Release files are signed with a self-signed "Doppleganger" certificate (`doppleg
 | **LIVE / LOOP** | What Zoom sees right now. LIVE is Aqua, LOOP is Violet; GLITCH appears in amber while a fake bad connection is running. |
 | **Sync** | How seamless a cut would be right now (Aqua = in sync). |
 | **Cut button** | **Tap:** cut immediately (hard cut). **Hold:** Doppleganger waits and cuts by itself the moment you're in sync; let go first to cancel. The button wears the colour of where you're cutting *to*. |
-| **Glitch / Record loop / Calibrate** | See below. |
+| **Glitch / Record loop** | See below. |
 | **Webcam** | Pick which camera is your live feed (virtual cameras are never offered). |
 | **Loops** | Your loop library: thumbnails, names (*Rename*), *Use*, *Delete*. A ⚠ appears when a loop's lighting doesn't match your room right now (darker, brighter, different colour). |
 | **Mini bar** | A compact always-on-top strip with a live thumbnail, sync meter, Cut and Glitch, to park beside Zoom. Drag it by the logo; *Full view* brings the window back. |
@@ -47,18 +46,18 @@ Release files are signed with a self-signed "Doppleganger" certificate (`doppleg
 | **F10** | Fake a bad connection (glitch) |
 | Space | Same as F9 (tap/hold), while the Doppleganger window is focused |
 | R | Record a loop; press again (or Esc) to **cancel** a recording in progress. Nothing is saved |
-| C / B / K | Calibrate / Glitch / next webcam |
+| B / K / C | Glitch / next webcam / calibrate the room (optional) |
 | E | End the recording now (final stretch) |
 | O | Show or hide the live (aqua) and loop (violet) **outlines** |
 | G / M | Show or hide guides / switch to the mini bar |
 
 The tray icon (by the clock) has the same commands, plus a webcam picker and Install/Remove camera.
 
-## Calibrating the silhouette (once per room and webcam)
+## Finding you in the picture (no setup)
 
-The first time you record, Doppleganger runs a ~10-second calibration. Redo it with **Calibrate** after moving the camera or changing the lighting.
+Doppleganger uses **AI person detection** (Google's MediaPipe selfie segmentation, the kind of model video-call apps use for background blur) to find you in every frame. It needs no setup, works in any room and with any webcam, and copes with lighting changes. The mask is snapped to real edges in the picture (guided filter, plus GrabCut for the start-pose silhouette), so hair and shoulders get a clean outline.
 
-Keep facing the camera and lean or step slowly to the side the banner asks for. Red tint marks the parts of the room it hasn't seen yet. This teaches Doppleganger what the empty room looks like (`background-<camera>.png`), so your silhouette follows your hair, shoulders and arms precisely, and the "matched" glow is judged by how well your body shape overlaps it.
+*Settings → Calibrate room* is still there as an optional fallback, and is used automatically only if the AI model can't run on a PC. Lean or step slowly to the side the banner asks for while it learns what the empty room looks like.
 
 ## Recording a loop
 
@@ -75,7 +74,7 @@ The app finds the frame in the final seconds that best matches the first, ends t
 
 - **Before the first cut**, the preview shows the loop's start-pose silhouette. Get into it (it glows aqua), then cut, or just *hold* F9 and let Doppleganger cut when you're there.
 - **After that**, the preview shows the off-air feed faded over the on-air one: the loop while you're LIVE, your camera while the LOOP is on air. Line up until the aqua border appears, or hold F9.
-- **Outlines** (O, or the checkbox under the sync meter): an aqua line traces you live and a violet line traces the loop, or the frozen picture during a glitch. When the two lines sit on top of each other, the cut is seamless. They need a calibration for the current webcam.
+- **Outlines** (O, or the checkbox under the sync meter): an aqua line traces you live and a violet line traces the loop, or the frozen picture during a glitch. When the two lines sit on top of each other, the cut is seamless.
 
 ## Called on unexpectedly? Fake a bad connection
 

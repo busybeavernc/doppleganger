@@ -105,6 +105,7 @@ jobs:
           --add-data "driver_build/micmute.exe;driver"
           --add-data "driver_build/SOFTCAM-LICENSE.txt;driver"
           --collect-data cv2
+          --collect-all mediapipe
           --collect-binaries pyvirtualcam
           --hidden-import pynput.keyboard._win32
           --hidden-import pynput.mouse._win32

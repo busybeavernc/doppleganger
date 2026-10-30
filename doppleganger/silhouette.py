@@ -80,11 +80,14 @@ def glow_amount(match: float) -> float:
 
 # ---------- extraction ----------
 
-def extract(frame: np.ndarray, face: Box | None, background: np.ndarray | None = None) -> Silhouette:
-    """Cut the person out of `frame`. Uses the calibrated background when available."""
+def extract(frame: np.ndarray, face: Box | None, background: np.ndarray | None = None,
+            segmenter=None) -> Silhouette:
+    """Cut the person out of `frame`: AI segmentation first, then the calibrated room, then a face-seeded guess."""
     try:
         mask = None
-        if background is not None:
+        if segmenter is not None:
+            mask = _from_segmentation(frame, segmenter)
+        if mask is None and background is not None:
             mask = _from_background(frame, face, background)
         if mask is None:
             mask = _grabcut(frame, face)
@@ -93,6 +96,27 @@ def extract(frame: np.ndarray, face: Box | None, background: np.ndarray | None =
     except cv2.error:
         pass
     return Silhouette(_fallback_shape(frame.shape, face))
+
+
+def _from_segmentation(frame: np.ndarray, segmenter) -> np.ndarray | None:
+    """AI mask, edge-snapped, then GrabCut where the model is unsure (hair, fingers, collar)."""
+    H, W = frame.shape[:2]
+    p = segmenter.refine(segmenter.probability(frame), frame, 320)
+    h, w = p.shape
+    img = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
+    m = np.full((h, w), cv2.GC_PR_BGD, np.uint8)
+    m[p > 0.5] = cv2.GC_PR_FGD
+    sure_fg = cv2.erode((p > 0.85).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    sure_bg = cv2.erode((p < 0.1).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    m[sure_fg] = cv2.GC_FGD
+    m[sure_bg] = cv2.GC_BGD
+    if not sure_fg.any():
+        return None
+    if sure_bg.any():
+        bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+        cv2.grabCut(img, m, None, bgd, fgd, 3, cv2.GC_INIT_WITH_MASK)
+    fg = np.where((m == cv2.GC_FGD) | (m == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    return _clean(fg, (W, H))
 
 
 def _from_background(frame: np.ndarray, face: Box | None, background: np.ndarray) -> np.ndarray | None:

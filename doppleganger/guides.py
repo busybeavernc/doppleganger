@@ -88,14 +88,15 @@ class PoseMatcher:
     """
 
     def __init__(self, ref_frame: np.ndarray, ref_box: Box | None = None, weight: np.ndarray | None = None,
-                 background: np.ndarray | None = None):
+                 background: np.ndarray | None = None, segmenter=None):
         self.ref_small = small_gray(ref_frame)
         self.ref_box = ref_box if ref_box is not None else detect_face(ref_frame)
         self.width = ref_frame.shape[1]
         self.weight = weight          # silhouette weight map (set once it's computed)
         self.sil_small: np.ndarray | None = None
+        self.segmenter = segmenter
         self.bg_small = self.known_small = None
-        if background is not None:
+        if background is not None and segmenter is None:
             from .calibrate import split_background
             bg, known = split_background(background)
             self.bg_small = small_color(bg)
@@ -115,9 +116,15 @@ class PoseMatcher:
             self.live_box = detect_face(frame)
         self._tick += 1
         s = match_score(self.ref_small, small, self.ref_box, self.live_box, self.width, self.weight)
-        if self.bg_small is not None and self.sil_small is not None:
+        live = None
+        if self.sil_small is not None and self.segmenter is not None:
+            prob = self.segmenter.probability(frame)
+            live = cv2.resize(prob, SMALL_SIZE, interpolation=cv2.INTER_LINEAR) > 0.5
+            k = np.ones(SMALL_SIZE[::-1], bool)
+        elif self.sil_small is not None and self.bg_small is not None:
             live = person_mask_small(small_color(frame), self.bg_small)
             k = self.known_small  # compare shapes only where the empty room is known
+        if live is not None:
             union = np.count_nonzero((live | self.sil_small) & k)
             self.shape_overlap = np.count_nonzero(live & self.sil_small & k) / max(union, 1)
             shape = float(np.clip((self.shape_overlap - 0.55) / 0.30, 0, 1))

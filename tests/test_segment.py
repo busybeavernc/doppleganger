@@ -1,0 +1,86 @@
+"""AI person segmentation: real model smoke test + the pipelines that use it (with a stand-in model)."""
+import os
+import sys
+
+import cv2
+import numpy as np
+import pytest
+
+sys.path.insert(0, os.path.dirname(__file__))
+import test_calibrate as T  # noqa: E402
+
+from doppleganger.guides import PoseMatcher  # noqa: E402
+from doppleganger.outline import OutlineTracer  # noqa: E402
+from doppleganger.silhouette import extract, glow_amount  # noqa: E402
+
+
+class FakeSegmenter:
+    """Stand-in for the AI model: knows where the drawn test person is (blurry, like the real low-res mask)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def probability(self, frame):
+        self.calls += 1
+        dx = int(frame[0, 0, 2]) - 100 if frame[0, 0, 2] >= 50 else 0  # test frames encode their offset
+        _, truth, _ = T.scene(dx)
+        p = cv2.resize(truth.astype(np.float32), (256, 144), interpolation=cv2.INTER_AREA)
+        return cv2.GaussianBlur(p, (0, 0), 2)
+
+    def refine(self, prob, frame, width=480):
+        h = round(frame.shape[0] * width / frame.shape[1])
+        return cv2.resize(prob, (width, h), interpolation=cv2.INTER_LINEAR)
+
+
+def frame_at(dx):
+    f, truth, face = T.scene(dx)
+    f = f.copy()
+    f[0, 0, 2] = 100 + dx  # offset tag for FakeSegmenter (one pixel)
+    return f, truth, face
+
+
+def iou(a, b):
+    return (a & b).sum() / max((a | b).sum(), 1)
+
+
+def test_silhouette_from_ai_mask_needs_no_calibration():
+    f, truth, face = frame_at(0)
+    sil = extract(f, face, background=None, segmenter=FakeSegmenter())
+    assert iou(sil.mask > 0, truth) > 0.93
+
+
+def test_outlines_from_ai_mask_per_stream():
+    seg = FakeSegmenter()
+    tr = OutlineTracer(segmenter=seg)
+    f0, _, _ = frame_at(0)
+    f1, _, _ = frame_at(60)
+    c_live = tr.contour(f0, (640, 360), False, "live")
+    c_loop = tr.contour(f1, (640, 360), False, "other")
+    assert c_live is not None and c_loop is not None
+    assert c_loop[..., 0].mean() - c_live[..., 0].mean() > 40   # each stream traces its own person
+
+
+def test_match_glow_from_ai_mask():
+    seg = FakeSegmenter()
+    ref, _, face = frame_at(0)
+    sil = extract(ref, face, segmenter=seg)
+    m = PoseMatcher(ref, ref_box=face, segmenter=seg)
+    m.set_silhouette(sil)
+    for _ in range(15):
+        away = m.update(frame_at(120)[0])
+    assert glow_amount(away) == 0.0
+    for _ in range(15):
+        back = m.update(frame_at(2)[0])
+    assert glow_amount(back) == 1.0 and m.shape_overlap > 0.85
+
+
+def test_real_model_loads_and_runs():
+    pytest.importorskip("mediapipe")
+    from doppleganger.segment import PersonSegmenter
+    seg = PersonSegmenter()
+    frame = np.full((720, 1280, 3), 120, np.uint8)
+    p = seg.probability(frame)
+    assert p.shape == (144, 256) and p.dtype == np.float32 and 0 <= p.min() <= p.max() <= 1
+    r = seg.refine(p, frame, 480)
+    assert r.shape == (270, 480)
+    seg.close()

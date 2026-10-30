@@ -20,6 +20,7 @@ from .cutcontrol import SYNC_THRESHOLD, CutController
 from .glitch import Glitch
 from .hotkeys import GlobalHotkeys
 from .mic import MicMuter
+from . import segment
 from . import outline
 from .outline import OutlineTracer
 from .player import LoopPlayer, latest_loop
@@ -150,6 +151,8 @@ class Engine:
             cfg.save(config_path)
         self.output = Output(cfg, vcam)
         self.recorder = Recorder(cfg)
+        self.seg = segment.get()              # AI person segmentation (None -> room calibration fallback)
+        self.recorder.segmenter = self.seg
         self.mic = MicMuter()
         self.cut = CutController()
         self.mode = "live"
@@ -313,7 +316,8 @@ class Engine:
             self.notify(f"Loop: {library.info(path).name}")
 
     def _make_loop_matcher(self) -> None:
-        self.loop_matcher = guides.PoseMatcher(self.player.first_frame, background=self.background)
+        self.loop_matcher = guides.PoseMatcher(self.player.first_frame, background=self.background,
+                                               segmenter=self.seg)
         if self.loop_sil is not None:
             self.loop_matcher.set_silhouette(self.loop_sil)
 
@@ -417,8 +421,8 @@ class Engine:
             self.notify("Cut back to LIVE before recording.")
         elif self.calibrator is not None:
             pass
-        elif self.background is None:
-            # First recording: calibrate the silhouette first, then record automatically.
+        elif self.background is None and self.seg is None:
+            # No AI segmentation available: calibrate the room first, then record automatically.
             self.calibrate(then_record=True)
         else:
             self.recorder.start()
@@ -455,23 +459,26 @@ class Engine:
     def toggle_outlines(self) -> None:
         self.cfg.show_outlines = not self.cfg.show_outlines
         self.cfg.save(self.config_path)
-        if self.cfg.show_outlines and self.background is None:
-            self.notify("Outlines need a calibration for this webcam - press Calibrate.", 6)
+        if self.cfg.show_outlines and self.background is None and self.seg is None:
+            self.notify("Outlines need a calibration for this webcam - see Settings.", 6)
 
     def _draw_outlines(self, prev: np.ndarray, live: np.ndarray, other: np.ndarray | None) -> None:
         """Aqua = you now, Violet = the loop / frozen picture. Overlapping lines = in sync."""
         if not self.cfg.show_outlines:
             return
-        if self.background is None:
+        if self.seg is not None:
+            if self._tracer is None or self._tracer.segmenter is None:
+                self._tracer = OutlineTracer(segmenter=self.seg)
+        elif self.background is None:
             guides.put_text(prev, "Outlines: calibrate this webcam to see them", (12, prev.shape[0] - 14), 0.45)
             return
-        if self._tracer is None or self._tracer_bg is not self.background:
+        elif self._tracer is None or self._tracer_bg is not self.background:
             self._tracer, self._tracer_bg = OutlineTracer(self.background), self.background
         size = (prev.shape[1], prev.shape[0])
         mirrored = self.cfg.mirror_preview
         if other is not None:
-            outline.draw(prev, self._tracer.contour(other, size, mirrored), brand.CV_VIOLET)
-        outline.draw(prev, self._tracer.contour(live, size, mirrored), brand.CV_AQUA)
+            outline.draw(prev, self._tracer.contour(other, size, mirrored, "other"), brand.CV_VIOLET)
+        outline.draw(prev, self._tracer.contour(live, size, mirrored, "live"), brand.CV_AQUA)
         h = prev.shape[0]
         x = 14 + guides.put_text(prev, "you", (14, h - 14), 0.45, brand.CV_AQUA, bold=True)
         if other is not None:

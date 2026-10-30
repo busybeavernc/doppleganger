@@ -70,6 +70,7 @@ class Recorder:
         self.message = ""
         self.result_path: str | None = None  # set when a new loop is ready
         self.background: np.ndarray | None = None  # calibrated empty-room image (optional)
+        self.segmenter = None                       # AI person segmentation (preferred)
         self._reset()
 
     def _reset(self):
@@ -86,7 +87,7 @@ class Recorder:
         self._raw_path = ""
 
     def _make_silhouette(self, frame: np.ndarray, face) -> None:
-        sil = extract(frame, face, self.background)
+        sil = extract(frame, face, self.background, self.segmenter)
         if self.matcher is not None:
             self.matcher.set_silhouette(sil)
         self.silhouette = sil
@@ -147,7 +148,7 @@ class Recorder:
         small = guides.small_gray(frame)
         if not self.smalls:
             self.first_frame = frame.copy()
-            self.matcher = guides.PoseMatcher(frame, background=self.background)
+            self.matcher = guides.PoseMatcher(frame, background=self.background, segmenter=self.segmenter)
             # Cut the silhouette out on a background thread (~0.2s) so output never stalls.
             self._sil_thread = threading.Thread(target=self._make_silhouette,
                                                 args=(self.first_frame, self.matcher.ref_box), daemon=True)

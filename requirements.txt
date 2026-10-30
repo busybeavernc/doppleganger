@@ -1,4 +1,5 @@
-opencv-python>=4.8,<5
+opencv-contrib-python>=4.8,<5   # one OpenCV build for us and MediaPipe (contrib: guided filter)
+mediapipe>=0.10.14              # AI person segmentation
 numpy>=1.24
 pyvirtualcam>=0.12
 pynput>=1.7

@@ -193,8 +193,11 @@ class MainWindow:
             row=0, column=0, sticky="ew", padx=(0, 4))
         self.rec_btn = ttk.Button(row, text="Record loop", command=lambda: self.e.request("record"))
         self.rec_btn.grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(row, text="Calibrate", command=lambda: self.e.request("calibrate")).grid(
-            row=0, column=2, sticky="ew", padx=(4, 0))
+        if self.e.seg is None:  # AI segmentation unavailable: calibration is needed, keep it handy
+            ttk.Button(row, text="Calibrate", command=lambda: self.e.request("calibrate")).grid(
+                row=0, column=2, sticky="ew", padx=(4, 0))
+        else:
+            row.columnconfigure(2, weight=0)
 
         ttk.Separator(side).grid(sticky="ew", pady=12)
 
@@ -507,6 +510,14 @@ class SettingsWindow:
         ttk.Label(f, text=f"{hk}: tap = cut now, hold = cut when in sync     {gk}: fake a bad connection",
                   style="Small.TLabel").grid(sticky="w")
 
+        ttk.Label(f, text="Finding you in the picture", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
+        cal = ttk.Frame(f)
+        cal.grid(sticky="ew")
+        how = ("AI person detection - no setup needed. Calibrating the room is an optional fallback."
+               if self.e.seg is not None else "Room calibration (AI detection isn't available on this PC).")
+        ttk.Label(cal, text=how, style="Small.TLabel", wraplength=330, justify="left").pack(side="left")
+        ttk.Button(cal, text="Calibrate room", command=lambda: self.e.request("calibrate")).pack(side="right")
+
         ttk.Label(f, text="Doppleganger camera", style="Head.TLabel").grid(sticky="w", pady=(12, 2))
         cam = ttk.Frame(f)
         cam.grid(sticky="ew")
@@ -654,6 +665,8 @@ class Wizard:
     def __init__(self, main: MainWindow):
         self.main = main
         self.e = main.e
+        if self.e.seg is not None:  # AI detection finds you without calibrating the room
+            self.STEPS = tuple(s for s in self.STEPS if s != "calibrate")
         self.win = tk.Toplevel(main.root)
         self.win.title("Doppleganger setup")
         self.win.resizable(False, False)
@@ -740,7 +753,7 @@ class Wizard:
         tk.Label(self.body, image=self._logo, bg=MIDNIGHT).pack(anchor="w", pady=(4, 18))
         self._para("Doppleganger records a short, seamless loop of you, then lets you switch between "
                    "that loop and your live webcam during a meeting - without anyone noticing.")
-        self._para("This guide takes about 3 minutes: add the camera, pick your webcam, calibrate, "
+        self._para("This guide takes about 2 minutes: add the camera, pick your webcam, "
                    "and record your first loop.")
 
     def _page_camera(self):
@@ -767,7 +780,7 @@ class Wizard:
         self._status()
 
     def _page_record(self):
-        self._title("4  Record your first loop")
+        self._title(f"{self.STEPS.index('record')}  Record your first loop")
         self._para("Sit as you would in a meeting. Hold still for the first 10 seconds, then look natural - "
                    "nod, blink, glance at the screen. In the last 10 seconds, step back into your silhouette "
                    "until it glows aqua, and hold still.")
@@ -777,7 +790,7 @@ class Wizard:
         self._status()
 
     def _page_zoom(self):
-        self._title("5  Use it in your meeting")
+        self._title(f"{self.STEPS.index('zoom')}  Use it in your meeting")
         hk = self.main.cfg.hotkey.strip("<>").upper()
         gk = self.main.cfg.glitch_hotkey.strip("<>").upper()
         self._para("In Zoom: Settings → Video → Camera → \"Doppleganger\".  In Teams: Settings → Devices → Camera.")
