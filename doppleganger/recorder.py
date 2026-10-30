@@ -223,6 +223,7 @@ class Recorder:
         cfg = self.cfg
         h, w = preview.shape[:2]
         if self.state == State.COUNTDOWN:
+            guides.put_text(preview, "R / Esc = cancel", (preview.shape[1] - 160, preview.shape[0] - 50), 0.45)
             n = cfg.countdown_seconds - int(time.monotonic() - self.t0)
             guides.banner(preview, f"Get in your start pose and HOLD STILL...  {n}", brand.CV_VIOLET)
             return preview
@@ -265,6 +266,7 @@ class Recorder:
         # recording dot + time
         cv2.circle(preview, (w - 30, h - 30), 10, brand.CV_DANGER, -1, cv2.LINE_AA)
         guides.put_text(preview, f"{self.elapsed:0.0f}/{cfg.loop_seconds:0.0f}s", (w - 160, h - 22), 0.6)
+        guides.put_text(preview, "R / Esc = cancel", (w - 160, h - 50), 0.45)
         if self.in_return_zone():
-            guides.put_text(preview, "E = end now", (w - 160, h - 50), 0.5)
+            guides.put_text(preview, "E = end now", (w - 160, h - 74), 0.45)
         return preview

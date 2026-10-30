@@ -173,6 +173,9 @@ class MainWindow:
         self.sync_bar.grid(row=0, column=1, sticky="ew")
         self.sync_pct = ttk.Label(syncrow, text="0%", width=5, anchor="e", style="Small.TLabel")
         self.sync_pct.grid(row=0, column=2)
+        self.v_outlines = tk.BooleanVar(value=self.cfg.show_outlines)
+        ttk.Checkbutton(side, text="Outlines: you (aqua) · loop (violet)   O", variable=self.v_outlines,
+                        command=lambda: self.e.request("outlines")).grid(sticky="w", pady=(6, 0))
 
         # --- cut ---
         self.cut_btn = HoldButton(side, self.e)
@@ -245,6 +248,8 @@ class MainWindow:
             for kk in (k, k.upper()):
                 r.bind_all(f"<KeyPress-{kk}>", lambda _e, a=action: self._key_action(a))
         r.bind_all("<Escape>", lambda _e: self.e.request("cancel"))
+        for kk in ("o", "O"):
+            r.bind_all(f"<KeyPress-{kk}>", lambda _e: self._key_action("outlines"))
         for kk in ("m", "M"):
             r.bind_all(f"<KeyPress-{kk}>", lambda _e: None if self._typing() else self.show_minibar())
         for kk in ("g", "G"):
@@ -386,7 +391,10 @@ class MainWindow:
         else:
             self.out_lbl.configure(text=f"● Not sending to Zoom: {o.error}", foreground=DANGER)
         rec = e.recorder.state
-        self.rec_btn.configure(text="Recording..." if rec in (State.COUNTDOWN, State.RECORDING) else "Record loop")
+        self.rec_btn.configure(text="Cancel recording" if e.recording_active else
+                               ("Stitching..." if rec == State.PROCESSING else "Record loop"))
+        if self.v_outlines.get() != self.cfg.show_outlines:
+            self.v_outlines.set(self.cfg.show_outlines)
         warn = e.lighting_warning
         self.light_lbl.configure(text=f"⚠ {warn}" if warn else "")
         if e.library_version != self._lib_version:
@@ -484,6 +492,9 @@ class SettingsWindow:
                         command=self._changed).grid(sticky="w")
         ttk.Checkbutton(f, text="Show alignment guides in the preview (G)", variable=self.v_guides,
                         command=self._changed).grid(sticky="w")
+        self.v_outlines = tk.BooleanVar(value=self.cfg.show_outlines)
+        ttk.Checkbutton(f, text="Show live (aqua) and loop (violet) outlines (O)", variable=self.v_outlines,
+                        command=self._changed).grid(sticky="w")
         op = ttk.Frame(f)
         op.grid(sticky="ew", pady=(6, 0))
         ttk.Label(op, text="Overlay strength").pack(side="left")
@@ -521,6 +532,7 @@ class SettingsWindow:
         c.mute_mic_on_loop = self.v_mute.get()
         c.hide_from_screen_share = self.v_hide.get()
         c.show_guides = self.v_guides.get()
+        c.show_outlines = self.v_outlines.get()
         c.crossfade_ms = 300 if self.v_fade.get() else 0
         c.overlay_opacity = round(float(self.v_opacity.get()), 2)
         c.save(self.e.config_path)
@@ -536,6 +548,7 @@ class SettingsWindow:
         if not self.alive:
             return
         self.v_guides.set(self.cfg.show_guides)
+        self.v_outlines.set(self.cfg.show_outlines)
         installed = self.e.tray_driver_installed()
         self.drv_lbl.configure(text="Installed ✓ - choose \"Doppleganger\" in Zoom" if installed
                                else "Not installed")
@@ -758,7 +771,9 @@ class Wizard:
         self._para("Sit as you would in a meeting. Hold still for the first 10 seconds, then look natural - "
                    "nod, blink, glance at the screen. In the last 10 seconds, step back into your silhouette "
                    "until it glows aqua, and hold still.")
-        self._button("Start recording", "record")
+        self.rec_button = ttk.Button(self.body, text="Start recording", style="Accent.TButton",
+                                     command=lambda: self.e.request("record"))
+        self.rec_button.pack(anchor="w", pady=(4, 0))
         self._status()
 
     def _page_zoom(self):
@@ -790,6 +805,7 @@ class Wizard:
             elif e.background is not None:
                 txt, col = "✓ Calibrated.", AQUA
         elif page == "record":
+            self.rec_button.configure(text="Cancel recording" if e.recording_active else "Start recording")
             st = e.recorder.state
             if st in (State.COUNTDOWN, State.RECORDING):
                 txt = f"Recording... {int(e.recorder.elapsed)} / {int(e.cfg.loop_seconds)} s"

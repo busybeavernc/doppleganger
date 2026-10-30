@@ -47,6 +47,7 @@ class Config:
     # Window
     mirror_preview: bool = True
     show_guides: bool = True
+    show_outlines: bool = True          # Aqua (you) / Violet (loop) outlines in the preview
     setup_done: bool = False            # first-run setup wizard completed (or skipped)
     mini_bar: bool = False              # start in the compact always-on-top bar
     mini_bar_pos: str = ""              # "+x+y" where you last left the mini bar

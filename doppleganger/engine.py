@@ -20,6 +20,8 @@ from .cutcontrol import SYNC_THRESHOLD, CutController
 from .glitch import Glitch
 from .hotkeys import GlobalHotkeys
 from .mic import MicMuter
+from . import outline
+from .outline import OutlineTracer
 from .player import LoopPlayer, latest_loop
 from .recorder import Recorder, State
 from .silhouette import Silhouette, glow_amount
@@ -176,6 +178,8 @@ class Engine:
         self.on_quit = None                       # set by the window
         self.ask = _ask_yes_no                    # replaced by the window's own dialogs
         self._light_at = 0.0
+        self._tracer: OutlineTracer | None = None
+        self._tracer_bg = None
         self._load_background()
         path = self._initial_loop()
         if path:
@@ -397,8 +401,19 @@ class Engine:
         elif r == "cancel":
             self.notify("Hold-to-sync cancelled - you weren't in sync yet. Tap to cut anyway.", 5)
 
+    @property
+    def recording_active(self) -> bool:
+        """Recording, counting down, or calibrating on the way to a recording."""
+        return (self.recorder.state in (State.COUNTDOWN, State.RECORDING)
+                or (self.calibrator is not None and self._record_after_calibration))
+
     def record(self) -> None:
-        if self.mode == "loop":
+        """Record button / R: starts a recording - or cancels the one in progress."""
+        if self.recording_active:
+            self.cancel_recording()
+        elif self.recorder.state == State.PROCESSING:
+            self.notify("Still stitching the last loop - one moment.")
+        elif self.mode == "loop":
             self.notify("Cut back to LIVE before recording.")
         elif self.calibrator is not None:
             pass
@@ -420,12 +435,47 @@ class Engine:
         self.calibrator = Calibrator()
         self._record_after_calibration = then_record
 
+    def cancel_recording(self) -> None:
+        if self.calibrator is not None and self._record_after_calibration:
+            self.calibrator = None
+            self._record_after_calibration = False
+        self.recorder.cancel()  # stops the countdown/recording and deletes the partial file
+        self.recorder.message = ""
+        self.notify("Recording cancelled - nothing was saved.")
+        log.info("Recording cancelled by user")
+
     def cancel(self) -> None:
-        if self.calibrator is not None:
+        """Esc: cancel whatever is in progress (recording or calibration)."""
+        if self.recording_active:
+            self.cancel_recording()
+        elif self.calibrator is not None:
             self.calibrator = None
             self.notify("Calibration cancelled.")
-        else:
-            self.recorder.cancel()
+
+    def toggle_outlines(self) -> None:
+        self.cfg.show_outlines = not self.cfg.show_outlines
+        self.cfg.save(self.config_path)
+        if self.cfg.show_outlines and self.background is None:
+            self.notify("Outlines need a calibration for this webcam - press Calibrate.", 6)
+
+    def _draw_outlines(self, prev: np.ndarray, live: np.ndarray, other: np.ndarray | None) -> None:
+        """Aqua = you now, Violet = the loop / frozen picture. Overlapping lines = in sync."""
+        if not self.cfg.show_outlines:
+            return
+        if self.background is None:
+            guides.put_text(prev, "Outlines: calibrate this webcam to see them", (12, prev.shape[0] - 14), 0.45)
+            return
+        if self._tracer is None or self._tracer_bg is not self.background:
+            self._tracer, self._tracer_bg = OutlineTracer(self.background), self.background
+        size = (prev.shape[1], prev.shape[0])
+        mirrored = self.cfg.mirror_preview
+        if other is not None:
+            outline.draw(prev, self._tracer.contour(other, size, mirrored), brand.CV_VIOLET)
+        outline.draw(prev, self._tracer.contour(live, size, mirrored), brand.CV_AQUA)
+        h = prev.shape[0]
+        x = 14 + guides.put_text(prev, "you", (14, h - 14), 0.45, brand.CV_AQUA, bold=True)
+        if other is not None:
+            guides.put_text(prev, "loop", (x + 12, h - 14), 0.45, brand.CV_VIOLET, bold=True)
 
     def _update_calibration(self, live: np.ndarray) -> None:
         cal = self.calibrator
@@ -493,6 +543,8 @@ class Engine:
                 self.calibrate()
             elif a == "cancel":
                 self.cancel()
+            elif a == "outlines":
+                self.toggle_outlines()
             elif a == "end_recording":
                 self.recorder.end_now()
             elif a == "glitch":
@@ -676,9 +728,11 @@ class Engine:
             # Same overlay as always: your live camera see-through over the frozen picture Zoom sees.
             prev = self._draw_offair_overlay(prev, live, "live camera", text_y=125)
             self._draw_glitch_banner(prev)
+            self._draw_outlines(prev, live, out)
         elif cfg.show_guides and self.loop_running and loop_frame is not None:
             other = live if self.mode == "loop" else loop_frame
             prev = self._draw_offair_overlay(prev, other, "live camera" if self.mode == "loop" else "loop")
+            self._draw_outlines(prev, live, loop_frame)
         elif cfg.show_guides and self.mode == "live" and self.loop_matcher is not None:
             # Before the first cut: line up with the loop's start pose.
             glow = glow_amount(self.sync)
@@ -686,6 +740,7 @@ class Engine:
                 self.loop_sil.draw(prev, cfg.mirror_preview, glow)
             if glow >= 0.99:
                 guides.put_text(prev, "In start pose - cut is seamless", (12, 34), 0.7, brand.CV_AQUA)
+            self._draw_outlines(prev, live, self.player.first_frame if self.player else None)
         if self.cut.waiting:
             guides.banner(prev, f"Hold to sync - cutting when in sync ({int(self.sync * 100)}%)", brand.CV_VIOLET)
         return cv2.cvtColor(prev, cv2.COLOR_BGR2RGB)

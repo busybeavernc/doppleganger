@@ -46,8 +46,10 @@ Release files are signed with a self-signed "Doppleganger" certificate (`doppleg
 | **F9** | **Tap** = cut now. **Hold** = cut when in sync |
 | **F10** | Fake a bad connection (glitch) |
 | Space | Same as F9 (tap/hold), while the Doppleganger window is focused |
-| R / C / B / K | Record loop / Calibrate / Glitch / next webcam |
-| E / Esc | End the recording now (final stretch) / cancel recording or calibration |
+| R | Record a loop; press again (or Esc) to **cancel** a recording in progress. Nothing is saved |
+| C / B / K | Calibrate / Glitch / next webcam |
+| E | End the recording now (final stretch) |
+| O | Show or hide the live (aqua) and loop (violet) **outlines** |
 | G / M | Show or hide guides / switch to the mini bar |
 
 The tray icon (by the clock) has the same commands, plus a webcam picker and Install/Remove camera.
@@ -73,6 +75,7 @@ The app finds the frame in the final seconds that best matches the first, ends t
 
 - **Before the first cut**, the preview shows the loop's start-pose silhouette. Get into it (it glows aqua), then cut, or just *hold* F9 and let Doppleganger cut when you're there.
 - **After that**, the preview shows the off-air feed faded over the on-air one: the loop while you're LIVE, your camera while the LOOP is on air. Line up until the aqua border appears, or hold F9.
+- **Outlines** (O, or the checkbox under the sync meter): an aqua line traces you live and a violet line traces the loop, or the frozen picture during a glitch. When the two lines sit on top of each other, the cut is seamless. They need a calibration for the current webcam.
 
 ## Called on unexpectedly? Fake a bad connection
 

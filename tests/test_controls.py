@@ -124,3 +124,63 @@ def test_library_names_thumbnails_and_lighting(tmp_path):
     assert library.lighting_warning(dark, dark) is None
     library.delete(str(a))
     assert [li.stem for li in library.list_loops(str(tmp_path))] == [b.name]
+
+
+# ---------- cancelling a recording ----------
+
+def _engine_stub(tmp_path):
+    from doppleganger.config import Config
+    from doppleganger.engine import Engine
+    from doppleganger.recorder import Recorder
+    e = Engine.__new__(Engine)
+    e.cfg = Config(loops_dir=str(tmp_path), countdown_seconds=0, fps=10)
+    e.config_path = str(tmp_path / "config.json")
+    e.recorder = Recorder(e.cfg)
+    e.calibrator = None
+    e._record_after_calibration = False
+    e.background = np.zeros((90, 160, 3), np.uint8)
+    e.mode = "live"
+    e.toast, e.toast_until = "", 0.0
+    return e
+
+
+def test_record_again_cancels_and_saves_nothing(tmp_path):
+    from doppleganger.recorder import State
+    e = _engine_stub(tmp_path)
+    e.record()
+    frame = np.zeros((96, 128, 3), np.uint8)
+    for _ in range(5):
+        e.recorder.update(frame)
+    assert e.recording_active and e.recorder.state == State.RECORDING
+    e.record()  # pressed again: cancel
+    assert not e.recording_active and e.recorder.state == State.IDLE
+    assert list(tmp_path.glob("*.mp4")) == [] and list(tmp_path.glob("*.avi")) == []
+    assert "cancelled" in e.toast
+
+
+def test_esc_cancels_calibration_before_first_recording(tmp_path):
+    e = _engine_stub(tmp_path)
+    e.background = None
+    e.record()  # first recording: calibrate first
+    assert e.calibrator is not None and e.recording_active
+    e.cancel()
+    assert e.calibrator is None and not e.recording_active
+
+
+def test_outline_traces_the_person_against_the_calibrated_room():
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    import test_calibrate as T
+    from doppleganger.outline import OutlineTracer
+    _, bg = T.calibrated_background()
+    tracer = OutlineTracer(bg)
+    frame, truth, _ = T.scene(0)
+    m = tracer.mask(frame) > 0
+    truth_small = cv2.resize(truth.astype(np.uint8), (m.shape[1], m.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+    iou = (m & truth_small).sum() / (m | truth_small).sum()
+    assert iou > 0.85, iou
+    c = tracer.contour(frame, (640, 360), mirrored=False)
+    xs = c[..., 0]
+    assert 150 < xs.min() < 190 and 450 < xs.max() < 490  # shoulders span ~170..470
+    cm = tracer.contour(frame, (640, 360), mirrored=True)
+    assert abs((639 - cm[..., 0].max()) - xs.min()) <= 2  # mirrored for the mirrored preview
