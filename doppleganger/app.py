@@ -27,6 +27,7 @@ from . import updater
 from .recorder import Recorder, State
 from .tray import start_tray
 from .calibrate import Calibrator
+from .glitch import Glitch
 from .silhouette import Silhouette, glow_amount
 
 WINDOW = "Doppleganger"
@@ -123,6 +124,7 @@ class App:
         self._actions: queue.Queue[str] = queue.Queue()  # from hotkey, tray menu, update thread
         self._pending_update: str | None = None
         self._updating = False
+        self.glitch = Glitch(cfg.glitch_max_seconds)
         self.calibrator: Calibrator | None = None
         self._record_after_calibration = False
         self.background = (cv2.imread(BACKGROUND_FILE, cv2.IMREAD_UNCHANGED)
@@ -157,7 +159,8 @@ class App:
     def _start_global_hotkey(self) -> None:
         try:
             from pynput import keyboard
-            self._hk = keyboard.GlobalHotKeys({self.cfg.hotkey: lambda: self._actions.put("toggle")})
+            self._hk = keyboard.GlobalHotKeys({self.cfg.hotkey: lambda: self._actions.put("toggle"),
+                                               self.cfg.glitch_hotkey: lambda: self._actions.put("glitch")})
             self._hk.start()
         except Exception as e:  # noqa: BLE001
             self._hk = None
@@ -177,7 +180,11 @@ class App:
             # keeps playing in the background and is never restarted by a cut.
             self.player.restart()
             self.loop_running = True
-        if self.cfg.crossfade_ms > 0:
+        if self.glitch.active:
+            # The cut lands inside the glitch: the next "jump" reveals the new feed,
+            # then the picture recovers like a connection coming back.
+            self.glitch.recover(time.monotonic(), delay=0.4)
+        elif self.cfg.crossfade_ms > 0:
             self.fade_from, self.fade_start = self.mode, time.monotonic()
         self.mode = new
 
@@ -191,6 +198,11 @@ class App:
             self.calibrate(then_record=True)
         else:
             self.recorder.start()
+
+    def toggle_glitch(self) -> None:
+        was = self.glitch.active and not self.glitch.recovering
+        self.glitch.toggle(time.monotonic())
+        log.info("Glitch %s", "ending" if was else "started")
 
     def calibrate(self, then_record: bool = False) -> None:
         if self.mode == "loop" or self.recorder.state != State.IDLE:
@@ -258,6 +270,8 @@ class App:
                 self.record()
             elif a == "calibrate":
                 self.calibrate()
+            elif a == "glitch":
+                self.toggle_glitch()
             elif a == "update":
                 self.check_for_updates()
             elif a == "quit":
@@ -295,7 +309,7 @@ class App:
 
                 # Once activated, the loop advances every frame whether or not it's on air.
                 loop_frame = self.player.next_frame() if (self.loop_running and self.player) else None
-                out = self._compose(live, loop_frame)
+                out = self.glitch.process(self._compose(live, loop_frame), time.monotonic())
                 self.output.send(out)
 
                 if not self._ui(out, live, loop_frame) or not self._handle_actions():
@@ -374,6 +388,26 @@ class App:
             guides.put_text(prev, "Can't see your face - turn toward the camera", (20, h - 145), 0.6, (90, 90, 255))
         guides.put_text(prev, "Esc = cancel", (w - 130, h - 80), 0.45)
 
+    def _draw_glitch(self, prev: np.ndarray, out: np.ndarray) -> None:
+        h, w = prev.shape[:2]
+        g = self.cfg.glitch_hotkey.strip("<>").upper()
+        cut = self.cfg.hotkey.strip("<>").upper()
+        if self.glitch.recovering:
+            guides.banner(prev, "Connection 'recovering'...", (0, 120, 0))
+        elif self.mode == "loop":
+            guides.banner(prev, f"Fake bad connection - get in position, then {cut} to go live", (0, 110, 220))
+        else:
+            guides.banner(prev, f"Fake bad connection - {g} to end", (0, 110, 220))
+        # what Zoom sees right now
+        iw = w // 4
+        ih = iw * out.shape[0] // out.shape[1]
+        inset = cv2.resize(cv2.flip(out, 1) if self.cfg.mirror_preview else out, (iw, ih),
+                           interpolation=cv2.INTER_AREA)
+        x0, y0 = w - iw - 12, h - ih - 70
+        guides.rounded_rect(prev, (x0 - 4, y0 - 26), (x0 + iw + 4, y0 + ih + 4), (20, 20, 20), 8, 0.8)
+        prev[y0:y0 + ih, x0:x0 + iw] = inset
+        guides.put_text(prev, "Zoom sees:", (x0 + 4, y0 - 8), 0.45)
+
     def _draw_output_status(self, prev: np.ndarray) -> None:
         """Always-visible: is the picture actually reaching Zoom?"""
         h, w = prev.shape[:2]
@@ -388,12 +422,15 @@ class App:
         cfg = self.cfg
         recording = self.recorder.state in (State.COUNTDOWN, State.RECORDING)
         # While recording, the preview shows the live camera (what's being recorded).
-        base = live if recording else out
+        glitching = self.glitch.active
+        base = live if (recording or glitching) else out
         prev = cv2.flip(base, 1) if cfg.mirror_preview else base
         # Draw everything at the window's real size, so text and edges stay crisp.
         prev = cv2.resize(prev, self._display_size(prev.shape[1], prev.shape[0]), interpolation=cv2.INTER_AREA)
         if self.calibrator is not None:
             self._draw_calibration(prev)
+        elif glitching:
+            self._draw_glitch(prev, out)
         elif recording or self.recorder.state == State.PROCESSING:
             prev = self.recorder.draw(prev, cfg.mirror_preview)
         elif cfg.show_guides and self.loop_running and loop_frame is not None:
@@ -411,12 +448,14 @@ class App:
 
         h, w = prev.shape[:2]
         tag, color = ("LIVE", (0, 160, 0)) if self.mode == "live" else ("LOOP", (0, 0, 200))
-        guides.pill(prev, tag, w - 10, 10, color)
+        left = guides.pill(prev, tag, w - 10, 10, color)
+        if glitching:
+            guides.pill(prev, "GLITCH", left - 8, 10, (0, 120, 230))
         self._draw_output_status(prev)
         if not recording:
             fade = f"crossfade {cfg.crossfade_ms}ms" if cfg.crossfade_ms else "hard cut"
             guides.put_text(prev, f"SPACE/{cfg.hotkey.strip('<>').upper()} cut ({fade})  R record  "
-                                  f"C calibrate  G guides  X fade  U update  Q quit", (12, h - 14), 0.5)
+                                  f"B glitch  C calibrate  G guides  X fade  U update  Q quit", (12, h - 14), 0.5)
         msg = self.recorder.message if self.recorder.state == State.PROCESSING else ""
         if not msg and time.monotonic() < self.toast_until:
             msg = self.toast
@@ -438,6 +477,8 @@ class App:
             self.check_for_updates()
         elif key == 27:
             self.recorder.cancel()
+        elif key in (ord("b"), ord("B")):
+            self.toggle_glitch()
         elif key in (ord("c"), ord("C")):
             self.calibrate()
         elif key == 27 and self.calibrator is not None:

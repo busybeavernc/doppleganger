@@ -26,6 +26,8 @@ class Config:
     crossfade_ms: int = 0               # 0 = hard cut (default)
     overlay_opacity: float = 0.35       # preview: see-through strength of the off-air feed
     hotkey: str = "<f9>"                # global hotkey (works while Zoom is focused)
+    glitch_hotkey: str = "<f10>"        # global: fake a bad connection (freeze/jump)
+    glitch_max_seconds: float = 30.0    # glitch ends on its own after this long
 
     # Updates (installed Doppleganger.exe only)
     auto_update: bool = True            # check GitHub Releases each time the app opens

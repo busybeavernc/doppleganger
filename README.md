@@ -57,19 +57,31 @@ Loops are saved in `loops/`. The newest one loads automatically.
 | **F9** (works even while Zoom is focused) or **Space** | Cut LIVE ↔ LOOP |
 | C | Calibrate the silhouette (see above) |
 | G | Show/hide the silhouette / off-air overlay (preview only, never sent to Zoom) |
+| **F10** or B | Fake bad connection (see below) |
 | X | Toggle a 300 ms crossfade on cuts (**off by default** – hard cuts) |
 | U | Check for updates |
 | Q | Quit |
 
-The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Record new loop, Calibrate silhouette, Check for updates, Quit.
+The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Fake bad connection, Record new loop, Calibrate silhouette, Check for updates, Quit.
 
 **First cut to the loop:** the loop starts at its first frame (your start pose). Before that first cut, the LIVE preview shows the start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut.
 
 **After that, the loop never restarts.** It keeps playing in the background, so cutting back and forth picks it up wherever it is. The preview then shows the feed that is *not* on air as a faint see-through overlay: the loop while you're LIVE, or your live camera while the LOOP is on air. Line yourself up with it. When the preview gets a green border ("In sync – cut is seamless"), cut. The overlay appears only in your preview, never in Zoom. G hides it; `overlay_opacity` in `config.json` sets its strength (default 0.35).
 
+## Called on unexpectedly? Fake a bad connection
+
+Press **F10** (works while Zoom is focused), **B** in the preview, or *Fake bad connection* in the tray menu.
+
+- Zoom's picture starts freezing for 1–3 seconds at a time, stutters through a few frames now and then, and goes blocky and low-res, like a struggling connection.
+- Your preview switches to your live camera so you can get into position. A small "Zoom sees:" inset shows the choppy picture people are seeing.
+- When you're ready, press **F9**. The next "jump" reveals you live, then the picture sharpens over about 2 seconds, like the connection coming back.
+- Pressing F10 again also ends it. It ends on its own after 30 seconds (`glitch_max_seconds`).
+
+This affects video only. Your microphone is untouched, so if you need a moment, mute until you're live.
+
 ## Settings
 
-`config.json` is created on first run. Useful fields: `camera_index`, `width`/`height`/`fps`, `loop_seconds`, `hold_still_seconds`, `return_prompt_seconds`, `crossfade_ms`, `overlay_opacity`, `hotkey` (pynput format, e.g. `"<ctrl>+<alt>+l"`).
+`config.json` is created on first run. Useful fields: `camera_index`, `width`/`height`/`fps`, `loop_seconds`, `hold_still_seconds`, `return_prompt_seconds`, `crossfade_ms`, `overlay_opacity`, `glitch_hotkey`, `glitch_max_seconds`, `hotkey` (pynput format, e.g. `"<ctrl>+<alt>+l"`).
 
 Command-line shortcuts: `run.bat --camera 1 --seconds 120`, or `run.bat --no-vcam` for preview only.
 

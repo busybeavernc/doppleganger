@@ -20,6 +20,7 @@ def start_tray(request: Callable[[str], None], version: str):
     item = pystray.MenuItem
     menu = pystray.Menu(
         item("Cut LIVE / LOOP", lambda: request("toggle"), default=True),
+        item("Fake bad connection (glitch)", lambda: request("glitch")),
         item("Record new loop", lambda: request("record")),
         item("Calibrate silhouette", lambda: request("calibrate")),
         pystray.Menu.SEPARATOR,

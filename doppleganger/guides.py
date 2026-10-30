@@ -226,16 +226,17 @@ def draw_meter(img, label: str, value: float, y: int, good_high: bool = True) ->
 def banner(img, text: str, color=(0, 0, 0)) -> None:
     h, w = img.shape[:2]
     tw, th = text_size(text, 0.85, bold=True)
-    y = int(h * 0.06)
+    y = max(int(h * 0.06), 58)  # below the LIVE/LOOP label
     rounded_rect(img, (w // 2 - tw // 2 - 18, y), (w // 2 + tw // 2 + 18, y + th + 16), color, 12, 0.88)
     _, _, base = _text_patch(text, _px(0.85), (255, 255, 255), True, False)
     put_text(img, text, (w // 2 - tw // 2, y + 8 + base), 0.85, bold=True, shadow=False)
 
 
-def pill(img, text: str, right: int, top: int, color, scale: float = 0.8) -> None:
-    """Rounded label anchored at its top-right corner (used for LIVE / LOOP)."""
+def pill(img, text: str, right: int, top: int, color, scale: float = 0.8) -> int:
+    """Rounded label anchored at its top-right corner (used for LIVE / LOOP). Returns its left x."""
     tw, th = text_size(text, scale, bold=True)
     x0 = right - tw - 28
     rounded_rect(img, (x0, top), (right, top + th + 12), color, (th + 12) // 2)
     _, _, base = _text_patch(text, _px(scale), (255, 255, 255), True, False)
     put_text(img, text, (x0 + 14, top + 6 + base), scale, bold=True, shadow=False)
+    return x0

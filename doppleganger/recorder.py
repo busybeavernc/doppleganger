@@ -243,7 +243,7 @@ class Recorder:
             # small inset of the first frame, for matching your expression
             iw = w // 5
             inset = cv2.resize(ghost, (iw, iw * ghost.shape[0] // ghost.shape[1]))
-            top = int(h * 0.12) + 30  # below the banner
+            top = max(int(h * 0.06), 58) + 62  # below the banner
             preview[top:top + inset.shape[0], w - iw - 10:w - 10] = inset
             guides.put_text(preview, "first frame", (w - iw - 6, top + inset.shape[0] + 20), 0.5)
         elif self.in_start_hold():
