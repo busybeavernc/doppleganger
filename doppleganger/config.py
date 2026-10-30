@@ -27,6 +27,11 @@ class Config:
     restart_loop_on_cut: bool = True    # cut into the loop at its first frame
     hotkey: str = "<f9>"                # global hotkey (works while Zoom is focused)
 
+    # Updates (installed Doppleganger.exe only)
+    auto_update: bool = True            # check GitHub Releases each time the app opens
+    update_repo: str = "busybeavernc/doppleganger"
+    update_token: str = ""              # read-only GitHub token, needed only while the repo is private
+
     # Preview window
     mirror_preview: bool = True
     show_guides: bool = True

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import queue
 import threading
 import time
 
@@ -21,7 +22,9 @@ from . import guides
 from .camera import Camera
 from .config import Config
 from .player import LoopPlayer, latest_loop
+from . import updater
 from .recorder import Recorder, State
+from .tray import start_tray
 from .silhouette import Silhouette, glow_amount
 
 WINDOW = "Doppleganger"
@@ -67,11 +70,14 @@ class App:
         self.loop_matcher: guides.PoseMatcher | None = None
         self.toast = self.output.error
         self.toast_until = time.monotonic() + (15 if self.toast else 0)
-        self._toggle_requested = threading.Event()
+        self._actions: queue.Queue[str] = queue.Queue()  # from hotkey, tray menu, update thread
+        self._pending_update: str | None = None
+        self._updating = False
         path = latest_loop(cfg.loops_dir)
         if path:
             self._load_loop(path)
         self._start_global_hotkey()
+        self._tray = start_tray(self._actions.put, updater.current_version())
 
     # ---------- setup ----------
     def _load_loop(self, path: str) -> None:
@@ -90,7 +96,7 @@ class App:
     def _start_global_hotkey(self) -> None:
         try:
             from pynput import keyboard
-            self._hk = keyboard.GlobalHotKeys({self.cfg.hotkey: self._toggle_requested.set})
+            self._hk = keyboard.GlobalHotKeys({self.cfg.hotkey: lambda: self._actions.put("toggle")})
             self._hk.start()
         except Exception as e:  # noqa: BLE001
             self._hk = None
@@ -110,6 +116,61 @@ class App:
         if self.cfg.crossfade_ms > 0:
             self.fade_from, self.fade_start = self.mode, time.monotonic()
         self.mode = new
+
+    def record(self) -> None:
+        if self.mode == "loop":
+            self.notify("Cut back to LIVE before recording.")
+        else:
+            self.recorder.start()
+
+    def check_for_updates(self) -> None:
+        """Manual check (menu item / U key). Runs in the background; never blocks the camera."""
+        if self._updating:
+            return
+        if not updater.can_self_update():
+            self.notify("Updates are available in the installed Doppleganger.exe only.")
+            return
+        self._updating = True
+        self.notify("Checking for updates...", 30)
+
+        def work():
+            try:
+                rel = updater.check(self.cfg.update_repo, self.cfg.update_token)
+                if rel is None:
+                    self.notify(f"You're up to date (v{updater.current_version()}).")
+                    return
+                self.notify(f"Downloading v{rel.version}...", 600)
+                path = updater.download(rel, self.cfg.update_token,
+                                        lambda p: self.notify(f"Downloading v{rel.version}... {int(p * 100)}%", 600))
+                self._pending_update = path
+                self._actions.put("apply_update")
+            except updater.UpdateError as e:
+                self.notify(f"Update check failed: {e}", 8)
+            finally:
+                self._updating = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _handle_actions(self) -> bool:
+        """Run queued actions on the main thread. False = quit."""
+        while not self._actions.empty():
+            a = self._actions.get_nowait()
+            if a == "toggle":
+                self.toggle()
+            elif a == "record":
+                self.record()
+            elif a == "update":
+                self.check_for_updates()
+            elif a == "quit":
+                return False
+            elif a == "apply_update" and self._pending_update:
+                if self.recorder.state != State.IDLE:
+                    self.notify("Update downloaded - it will install when this recording finishes.", 10)
+                    threading.Timer(2.0, self._actions.put, ("apply_update",)).start()
+                    continue
+                self.close()
+                updater.apply_and_restart(self._pending_update)
+        return True
 
     # ---------- main loop ----------
     def run(self) -> None:
@@ -134,11 +195,8 @@ class App:
                 out = self._compose(live)
                 self.output.send(out)
 
-                if not self._ui(out, live):
+                if not self._ui(out, live) or not self._handle_actions():
                     break
-                if self._toggle_requested.is_set():
-                    self._toggle_requested.clear()
-                    self.toggle()
 
                 next_t += frame_dt
                 delay = next_t - time.monotonic()
@@ -191,7 +249,7 @@ class App:
         if not recording:
             fade = f"crossfade {cfg.crossfade_ms}ms" if cfg.crossfade_ms else "hard cut"
             guides.put_text(prev, f"SPACE/{cfg.hotkey.strip('<>').upper()} cut ({fade})  R record  "
-                                  f"G silhouette  X fade  Q quit", (12, h - 14), 0.5)
+                                  f"G silhouette  X fade  U update  Q quit", (12, h - 14), 0.5)
         msg = self.recorder.message if self.recorder.state == State.PROCESSING else ""
         if not msg and time.monotonic() < self.toast_until:
             msg = self.toast
@@ -208,10 +266,9 @@ class App:
         if key == ord(" "):
             self.toggle()
         elif key in (ord("r"), ord("R")):
-            if self.mode == "loop":
-                self.notify("Cut back to LIVE before recording.")
-            else:
-                self.recorder.start()
+            self.record()
+        elif key in (ord("u"), ord("U")):
+            self.check_for_updates()
         elif key == 27:
             self.recorder.cancel()
         elif key in (ord("e"), ord("E")):
@@ -226,8 +283,13 @@ class App:
         return True
 
     def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         if getattr(self, "_hk", None):
             self._hk.stop()
+        if getattr(self, "_tray", None):
+            self._tray.stop()
         self.camera.close()
         self.output.close()
         if self.player:
@@ -250,4 +312,38 @@ def main() -> None:
         cfg.loop_seconds = args.seconds
     if not os.path.exists(args.config):
         cfg.save(args.config)
+    if cfg.auto_update and updater.can_self_update():
+        startup_update(cfg)
     App(cfg, vcam=not args.no_vcam, config_path=args.config).run()
+
+
+def startup_update(cfg: Config) -> None:
+    """On launch: if a newer release exists, download it with a small progress window and restart.
+    Any problem (offline, GitHub down) just skips the update and opens the app normally."""
+    try:
+        rel = updater.check(cfg.update_repo, cfg.update_token, timeout=4)
+    except updater.UpdateError as e:
+        print(f"Update check skipped: {e}")
+        return
+    if rel is None:
+        return
+    title = "Doppleganger - updating"
+    cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
+
+    def show(p: float) -> None:
+        img = np.full((140, 520, 3), 32, np.uint8)
+        guides.put_text(img, f"Updating to v{rel.version}...", (20, 50), 0.8)
+        cv2.rectangle(img, (20, 80), (500, 104), (70, 70, 70), -1)
+        cv2.rectangle(img, (20, 80), (20 + int(480 * p), 104), (60, 200, 60), -1)
+        cv2.imshow(title, img)
+        cv2.waitKey(1)
+
+    show(0)
+    try:
+        path = updater.download(rel, cfg.update_token, show)
+    except updater.UpdateError as e:
+        print(f"Update skipped: {e}")
+        cv2.destroyWindow(title)
+        return
+    cv2.destroyWindow(title)
+    updater.apply_and_restart(path)

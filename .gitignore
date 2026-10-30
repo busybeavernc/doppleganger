@@ -4,3 +4,8 @@ __pycache__/
 loops/
 config.json
 .pytest_cache/
+dist/
+build/
+*.spec
+doppleganger-error.log
+doppleganger/_build.py

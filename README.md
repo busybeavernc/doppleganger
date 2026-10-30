@@ -2,13 +2,25 @@
 
 A tiny Windows app that replaces an OBS setup for one job: **record a seamless 1–3 minute loop of yourself before a meeting, then cut between that loop and your live webcam during the meeting.** The result appears in Zoom, Teams, Meet, etc. as a camera.
 
-## Setup (once)
+## Install
 
-1. Install **Python 3.10+** from python.org (tick "Add python.exe to PATH").
-2. Keep **OBS Studio** installed. Doppleganger uses OBS's virtual camera *driver*, but OBS itself does not need to be open. If OBS is open, make sure its own **Start Virtual Camera** is off.
-3. Double-click **`run.bat`**. The first run creates a `.venv` and installs the requirements.
+1. Keep **OBS Studio** installed. Doppleganger uses OBS's virtual camera *driver*, but OBS itself does not need to be open. If OBS is open, make sure its own **Start Virtual Camera** is off.
+2. Download **Doppleganger.exe** from the repo's **Releases** page (newest at the top).
+3. Put it in its own folder, e.g. `Documents\Doppleganger`. Your loops and settings are saved next to it.
+4. Double-click it. The first time, Windows SmartScreen may warn about an unrecognized app: click **More info → Run anyway**. Right-click the taskbar icon → *Pin to taskbar* for one-click access.
 
 In Zoom, choose **OBS Virtual Camera** as your camera.
+
+No Python or VS Code is needed. Every change pushed to `main` is built automatically by GitHub (Actions → *Build Windows app*) and published as a new release.
+
+### Updates
+- **Automatic:** each time you open the app, it checks Releases. If there's a newer version, it shows an "Updating…" window, swaps in the new .exe and reopens. If you're offline, it simply opens as usual.
+- **Manual:** right-click the Doppleganger icon by the clock → **Check for updates**, or press **U** in the preview. If a recording is in progress, the update waits until it's finished.
+- Turn off automatic checks with `"auto_update": false` in `config.json`.
+- **While the repo is private**, the app needs a read-only token to see releases. Create a fine-grained GitHub token with *Contents: Read-only* access to this repo only, and paste it into `config.json` as `"update_token"`. If the repo is public, no token is needed.
+
+### Run from source instead
+Install Python 3.10+, then double-click `run.bat`. It creates a `.venv` and installs the requirements on the first run.
 
 ## Recording a loop
 
@@ -37,7 +49,10 @@ Loops are saved in `loops/`. The newest one loads automatically.
 | **F9** (works even while Zoom is focused) or **Space** | Cut LIVE ↔ LOOP |
 | G | Show/hide the loop's start-pose silhouette while LIVE (preview only, never sent to Zoom) |
 | X | Toggle a 300 ms crossfade on cuts (**off by default** – hard cuts) |
+| U | Check for updates |
 | Q | Quit |
+
+The tray icon by the clock has the same menu: Cut LIVE/LOOP (also a double-click on the icon), Record new loop, Check for updates, Quit.
 
 By default, cutting to the loop starts it from its first frame. While LIVE, the preview shows the loop's start-pose silhouette. When it glows green ("In start pose – cut is seamless"), cut to the loop and the switch is invisible.
 

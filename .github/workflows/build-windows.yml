@@ -1,0 +1,64 @@
+name: Build Windows app
+
+# Every push to main builds Doppleganger.exe and publishes it as release vMAJOR.MINOR.<build #>.
+# Installed copies of the app check this release list to update themselves.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+
+      - name: Run tests
+        run: python -m pytest -q tests
+
+      - name: Stamp version
+        id: ver
+        shell: bash
+        run: |
+          base=$(python -c "import re;print('.'.join(re.search(r'\"(\d+)\.(\d+)', open('doppleganger/__init__.py').read()).groups()))")
+          v="$base.${{ github.run_number }}"
+          echo "VERSION = \"$v\"" > doppleganger/_build.py
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build Doppleganger.exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name Doppleganger
+          --collect-data cv2
+          --collect-binaries pyvirtualcam
+          --hidden-import pynput.keyboard._win32
+          --hidden-import pynput.mouse._win32
+          --hidden-import pystray._win32
+          launcher.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Doppleganger-${{ steps.ver.outputs.version }}
+          path: dist/Doppleganger.exe
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          gh release create "v$v" dist/Doppleganger.exe \
+            --title "Doppleganger $v" \
+            --notes "$(git log -1 --pretty=%s)" \
+            --target "$GITHUB_SHA" --latest
