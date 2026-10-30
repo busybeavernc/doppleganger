@@ -72,7 +72,7 @@ The app finds the frame in the final seconds that best matches the first, ends t
 
 ## Before you cut
 
-- **Before the first cut**, the preview shows the loop's start-pose silhouette. Get into it (it glows aqua), then cut, or just *hold* F9 and let Doppleganger cut when you're there.
+- **Before the first cut**, the loop's start pose shows as a soft violet shape with your aqua outline on top (with outlines on). Line them up ("In start pose – cut is seamless"), then cut, or just *hold* F9 and let Doppleganger cut when you're there. The white silhouette appears only while recording.
 - **After that**, the preview shows the off-air feed faded over the on-air one: the loop while you're LIVE, your camera while the LOOP is on air. Line up until the aqua border appears, or hold F9.
 - **Outlines** (O, or the checkbox under the sync meter): an aqua line traces you live and a violet line traces the loop, or the frozen picture during a glitch. When the two lines sit on top of each other, the cut is seamless.
 

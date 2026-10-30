@@ -742,10 +742,9 @@ class Engine:
             prev = self._draw_offair_overlay(prev, other, "live camera" if self.mode == "loop" else "loop")
             self._draw_outlines(prev, live, loop_frame)
         elif cfg.show_guides and self.mode == "live" and self.loop_matcher is not None:
-            # Before the first cut: line up with the loop's start pose.
+            # Before the first cut: line up with the loop's start pose (violet shape + your aqua line;
+            # the white silhouette is only used while recording).
             glow = glow_amount(self.sync)
-            if self.loop_sil is not None:
-                self.loop_sil.draw(prev, cfg.mirror_preview, glow)
             if glow >= 0.99:
                 guides.put_text(prev, "In start pose - cut is seamless", (12, 34), 0.7, brand.CV_AQUA)
             self._draw_outlines(prev, live, self.player.first_frame if self.player else None)
