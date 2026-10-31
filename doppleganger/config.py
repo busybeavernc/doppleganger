@@ -49,6 +49,7 @@ class Config:
     show_guides: bool = True
     show_outlines: bool = True          # Aqua (you) / Violet (loop) outlines in the preview
     show_record_tips: bool = True       # show "how to record a good loop" before each recording
+    mac_permissions_seen: bool = False  # Mac: the permissions page has been shown once
     setup_done: bool = False            # first-run setup wizard completed (or skipped)
     mini_bar: bool = False              # start in the compact always-on-top bar
     mini_bar_pos: str = ""              # "+x+y" where you last left the mini bar

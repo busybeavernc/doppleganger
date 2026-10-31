@@ -182,6 +182,24 @@ def ensure_camera_access(timeout: float = 120.0) -> bool | None:
     return answer.get("granted")
 
 
+def camera_permission() -> str:
+    """'allowed' / 'denied' / 'not asked' / 'unknown' (doesn't prompt)."""
+    try:
+        status = int(_capture_device_class().authorizationStatusForMediaType_(AV_VIDEO))
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    return {3: "allowed", 2: "denied", 1: "denied", 0: "not asked"}.get(status, "unknown")
+
+
+def relaunch() -> None:
+    """Quit and reopen Doppleganger (macOS applies Input Monitoring only to a freshly started app)."""
+    app = app_bundle()
+    if app:
+        subprocess.Popen(["/bin/sh", "-c", f"sleep 1.5; open -n '{app}'"], start_new_session=True)
+    else:  # running from source
+        subprocess.Popen([sys.executable, *sys.argv], start_new_session=True)
+
+
 def open_camera_privacy_settings() -> None:
     subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"])
 
@@ -319,6 +337,10 @@ class MacHotkeys:
 
     def start(self) -> None:
         import Quartz  # pyobjc-framework-Quartz
+        if has_input_monitoring() is False:
+            # Without permission the tap may be created yet never see a key - say so instead.
+            request_input_monitoring()
+            raise RuntimeError("Input Monitoring isn't allowed for Doppleganger yet")
 
         def callback(_proxy, etype, event, _refcon):
             try:

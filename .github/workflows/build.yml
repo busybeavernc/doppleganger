@@ -110,6 +110,7 @@ jobs:
         run: >
           pyinstaller --noconfirm --onefile --windowed --name Doppleganger
           --icon doppleganger/assets/icon.ico
+          --splash doppleganger/assets/splash.png
           --add-data "doppleganger/assets;doppleganger/assets"
           --add-data "driver_build/doppleganger_cam64.dll;driver"
           --add-data "driver_build/doppleganger_cam32.dll;driver"

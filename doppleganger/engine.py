@@ -149,17 +149,22 @@ class Engine:
     directly - they `request()` an action, which runs here between frames.
     """
 
-    def __init__(self, cfg: Config, vcam: bool, config_path: str):
+    def __init__(self, cfg: Config, vcam: bool, config_path: str, progress=None):
+        say = progress or (lambda _text, _p=None: None)  # startup progress for the splash screen
         self.cfg = cfg
         self.config_path = config_path
+        say("Opening your webcam...", 0.5)
         idx, self.camera_name = vcamlib.resolve_camera(cfg.camera_name, cfg.camera_index)
         self.camera = Camera(idx, cfg.width, cfg.height, cfg.fps)
         if (cfg.camera_name, cfg.camera_index) != (self.camera_name, idx):
             cfg.camera_name, cfg.camera_index = self.camera_name, idx
             cfg.save(config_path)
+        say("Connecting the virtual camera...", 0.6)
         self.output = Output(cfg, vcam)
         self.recorder = Recorder(cfg)
+        say("Loading AI person detection...", 0.7)
         self.seg = segment.get()              # AI person segmentation (None -> room calibration fallback)
+        say("Loading your loops...", 0.85)
         self.recorder.segmenter = self.seg
         self.mic = MicMuter()
         self.cut = CutController()

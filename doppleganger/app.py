@@ -5,7 +5,7 @@ import argparse
 import logging
 import os
 
-from . import updater
+from . import splash, updater
 from . import vcam as vcamlib
 from .config import Config
 from .engine import BACKGROUND_FILE, Engine, Output, background_file  # noqa: F401  (re-exported)
@@ -31,6 +31,8 @@ def main() -> None:
                         format="%(asctime)s %(levelname)s %(message)s")
     log.info("Doppleganger v%s starting in %s", updater.current_version(), os.getcwd())
 
+    if args.minimized:
+        splash.close()  # started at sign-in: stay out of the way
     if args.remove_camera:  # used by the uninstaller
         if vcamlib.installed_version() is not None:
             ok, detail = vcamlib.uninstall()
@@ -45,22 +47,28 @@ def main() -> None:
     if not os.path.exists(args.config):
         cfg.save(args.config)
     if cfg.auto_update and updater.can_self_update():
+        splash.status("Checking for updates...", 0.2)
         startup_update(cfg)
 
     import sys
     if sys.platform == "darwin":
         from . import macos
         os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")  # we ask ourselves, on the main thread
+        splash.status("Checking camera permission...", 0.3)
         if macos.ensure_camera_access() is False:
+            splash.close()
             macos.open_camera_privacy_settings()
             raise RuntimeError("Doppleganger isn't allowed to use the camera. Turn it on in System Settings > "
                                "Privacy & Security > Camera, then open Doppleganger again.")
 
-    engine = Engine(cfg, vcam=not args.no_vcam, config_path=args.config)
+    splash.status("Opening your webcam and loading AI person detection...", 0.45)
+    engine = Engine(cfg, vcam=not args.no_vcam, config_path=args.config, progress=splash.status)
     if not args.no_vcam and vcamlib.needs_install() and vcamlib.installed_version() is not None:
         engine.install_driver(ask=False)  # this version ships a newer camera driver
 
+    splash.status("Opening the window...", 0.95)
     from .ui import MainWindow  # imported late: Tk isn't needed for --remove-camera
+    splash.close()  # one Tk window at a time (two Tk roots at once misbehave on macOS)
     MainWindow(engine, minimized=args.minimized).run()
     log.info("Doppleganger closed")
     logging.shutdown()
@@ -122,6 +130,7 @@ def startup_update(cfg: Config) -> None:
         return
     if rel is None:
         return
+    splash.close()  # the "Updating..." window takes over
     from .ui import run_startup_update
     path = run_startup_update(rel, cfg.update_token)
     if path:

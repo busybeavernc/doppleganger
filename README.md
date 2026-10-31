@@ -24,9 +24,17 @@ Your loops and settings live in `%APPDATA%\Doppleganger` and are kept if you uni
    2. Open OBS, click **Start Virtual Camera**, and allow the camera extension in *System Settings → General → Login Items & Extensions → Camera Extensions*.
    3. Click **Stop Virtual Camera** and quit OBS. You don't need to open it again.
 5. In Zoom, Teams or Meet, choose **OBS Virtual Camera**. Keep OBS's own virtual camera stopped while Doppleganger is running.
-6. For the hotkeys to work while Zoom is in front, allow Doppleganger in *System Settings → Privacy & Security → Input Monitoring*. Settings has a button that opens this page. On most Mac keyboards, press **fn+F9** and **fn+F10**.
+6. **Allow Doppleganger on your Mac.** The setup guide has a page for this. It shows a ✓ for each permission once it's on, and its buttons open the right Settings page:
+   - **Camera** (*Privacy & Security → Camera*): turn on Doppleganger. macOS usually asks the first time it starts.
+   - **Input Monitoring** (*Privacy & Security → Input Monitoring*): this lets the hotkeys work while Zoom is in front. Turn on Doppleganger; if it isn't listed, click **+** and pick it from Applications. When macOS offers **Quit & Reopen**, accept, or use the guide's **Reopen Doppleganger** button. On most Mac keyboards the hotkeys are **fn+F9** and **fn+F10**.
+   - **OBS camera extension** (*General → Login Items & Extensions → Camera Extensions*): from step 4.
+
+   Doppleganger isn't signed by Apple yet, so macOS can treat an update as a new app and ask again. If the hotkeys stop working after an update, switch Input Monitoring off and on for Doppleganger.
 
 On a Mac, the microphone is silenced by setting the input volume to 0 while the LOOP is on air, then setting it back. Loops and settings live in `~/Library/Application Support/Doppleganger`. Updates install themselves the same way as on Windows, as long as Doppleganger runs from *Applications* and not from the disk image. Hiding from screen sharing uses macOS's "don't share this window" setting; some recent screen-capture methods may still show the window.
+
+### Starting up
+Loading the AI model and opening the webcam takes a few seconds, so a splash screen with the logo shows what's happening until the window opens.
 
 ### Updates
 Each time it opens, Doppleganger checks the releases. If there's a newer version, it shows an "Updating…" window, swaps itself out and reopens. *Settings → Updates → Check now* checks manually. An update never interrupts you while the LOOP is on air or a recording is running.

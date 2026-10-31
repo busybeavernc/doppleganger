@@ -450,6 +450,8 @@ class MainWindow:
         msg = e.message
         if e.mic.is_muted:
             msg = (msg + "   ·   " if msg else "") + "Microphone muted while the LOOP is on air"
+        if IS_MAC and getattr(e, "_hk", None) is None and not msg:
+            msg = "Hotkeys are off: allow Input Monitoring (Setup guide > Allow Doppleganger on your Mac)"
         self.status.configure(text=msg)
 
     def _refresh_busy(self) -> None:
@@ -526,8 +528,8 @@ class MainWindow:
         self.settings.win.lift()
 
     # ---------- lifecycle ----------
-    def on_close(self) -> None:
-        if self.e.mode == "loop" and not messagebox.askyesno(
+    def on_close(self, force: bool = False) -> None:
+        if not force and self.e.mode == "loop" and not messagebox.askyesno(
                 "Quit Doppleganger?", "The LOOP is on air. Quitting stops the picture Zoom sees.\n\nQuit?",
                 parent=self.root):
             return
@@ -556,6 +558,9 @@ class MainWindow:
                 self.cfg.save(self.e.config_path)
             else:
                 self.root.after(600, self.open_wizard)
+        elif IS_MAC and not self.cfg.mac_permissions_seen:
+            # set up with an earlier version: walk through the Mac permissions once
+            self.root.after(800, lambda: self.open_wizard(page="permissions"))
         self.root.mainloop()
         self.e.stop()
         self._engine_thread.join(timeout=5)
@@ -948,6 +953,10 @@ class Wizard:
         self.e = main.e
         if self.e.seg is not None:  # AI detection finds you without calibrating the room
             self.STEPS = tuple(s for s in self.STEPS if s != "calibrate")
+        if IS_MAC:  # macOS privacy permissions get their own page, right after the OBS camera
+            self.STEPS = ("welcome", "camera", "permissions") + tuple(
+                s for s in self.STEPS if s not in ("welcome", "camera"))
+        self._perm_checked = 0.0
         self.win = tk.Toplevel(main.root)
         self.win.title("Doppleganger setup")
         self.win.resizable(False, False)
@@ -957,7 +966,7 @@ class Wizard:
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self.step = 0
         self._logo = _photo(brand.asset("logo_dark.png"), 330)
-        self.body = ttk.Frame(self.win, padding=24, width=480, height=400 if IS_MAC else 350)
+        self.body = ttk.Frame(self.win, padding=24, width=480, height=480 if IS_MAC else 350)
         self.body.pack(fill="both", expand=True)
         self.body.pack_propagate(False)
         nav = ttk.Frame(self.win, padding=(24, 0, 24, 18))
@@ -1067,8 +1076,78 @@ class Wizard:
                    command=macos.open_camera_extension_settings).pack(side="left")
         self._status()
 
+    def _page_permissions(self):
+        self._title(f"{self.STEPS.index('permissions')}  Allow Doppleganger on your Mac")
+        ttk.Label(self.body, text="macOS asks before an app may use your camera or notice your hotkeys. "
+                                  "Turn on Doppleganger in each list below - you only do this once.",
+                  wraplength=430, justify="left").pack(anchor="w", pady=(0, 10))
+        self.perm_rows = {}
+        for key, name, why, how, action in (
+                ("camera", "Camera", "Shows you in the preview and records your loop.",
+                 "Turn on the switch next to Doppleganger.", macos.open_camera_privacy_settings),
+                ("hotkeys", "Input Monitoring",
+                 "Lets fn+F9 (cut) and fn+F10 (glitch) work while Zoom is in front.",
+                 "Turn on Doppleganger (not listed? click +, then Applications > Doppleganger). "
+                 "When macOS offers \"Quit & Reopen\", click it.",
+                 lambda: (macos.request_input_monitoring(), macos.open_input_monitoring_settings()))):
+            row = ttk.Frame(self.body)
+            row.pack(fill="x", pady=(0, 10))
+            state = tk.Label(row, text="…", width=2, bg=MIDNIGHT, fg=MUTED, font=(FONT, 14, "bold"))
+            state.pack(side="left", anchor="n")
+            col = ttk.Frame(row)
+            col.pack(side="left", fill="x", expand=True, padx=(6, 8))
+            ttk.Label(col, text=name, style="Head.TLabel").pack(anchor="w")
+            ttk.Label(col, text=why, style="Small.TLabel", wraplength=280, justify="left").pack(anchor="w")
+            hint = ttk.Label(col, text=how, style="Small.TLabel", wraplength=280, justify="left")
+            hint.pack(anchor="w")
+            btn = ttk.Button(row, text="Open Settings", command=action)
+            btn.pack(side="right", anchor="n")
+            self.perm_rows[key] = (state, hint, btn)
+        self.reopen_btn = ttk.Button(self.body, text="Reopen Doppleganger", style="Accent.TButton",
+                                     command=self._reopen)
+        ttk.Label(self.body, text="After an update, macOS may ask again (Doppleganger isn't signed by Apple yet). "
+                                  "If hotkeys stop working, switch Input Monitoring off and on for Doppleganger.",
+                  style="Small.TLabel", wraplength=430, justify="left").pack(anchor="w", side="bottom")
+        self._status()
+        self._perm_checked = 0.0
+        self.main.cfg.mac_permissions_seen = True
+        self.main.cfg.save(self.e.config_path)
+
+    def _reopen(self):
+        self.main.cfg.save(self.e.config_path)
+        macos.relaunch()
+        self.main.on_close(force=True)
+
+    def _refresh_permissions(self):
+        import time as _time
+        now = _time.monotonic()
+        if now - self._perm_checked < 1.0:  # asking macOS is cheap, but not every 33 ms
+            return
+        self._perm_checked = now
+        cam = macos.camera_permission()
+        mon = macos.has_input_monitoring()
+        hotkeys_running = getattr(self.e, "_hk", None) is not None
+        marks = {"camera": cam == "allowed", "hotkeys": bool(mon) and hotkeys_running}
+        for key, ok in marks.items():
+            state, hint, btn = self.perm_rows[key]
+            state.configure(text="✓" if ok else "!", fg=AQUA if ok else AMBER)
+            if ok:
+                hint.pack_forget()
+        need_reopen = bool(mon) and not hotkeys_running
+        if need_reopen and not self.reopen_btn.winfo_ismapped():
+            self.reopen_btn.pack(anchor="w", pady=(2, 0))
+        if all(marks.values()):
+            txt, col = "✓ All set.", AQUA
+        elif need_reopen:
+            txt, col = "Input Monitoring is on - reopen Doppleganger so the hotkeys start working.", AMBER
+        elif cam == "denied":
+            txt, col = "Camera is off for Doppleganger - turn it on, then reopen the app.", AMBER
+        else:
+            txt, col = "Waiting for the permissions above...", MUTED
+        self.status.configure(text=txt, foreground=col)
+
     def _page_webcam(self):
-        self._title("2  Choose your webcam")
+        self._title(f"{self.STEPS.index('webcam')}  Choose your webcam")
         self._para("Pick the webcam you want people to see. You should see yourself in the main window.")
         var = tk.StringVar(value=self.e.camera_name)
         box = ttk.Combobox(self.body, textvariable=var, state="readonly", values=self.e.tray_cameras(), width=42)
@@ -1076,7 +1155,7 @@ class Wizard:
         box.bind("<<ComboboxSelected>>", lambda _e: self.e.request(f"camera:{var.get()}"))
 
     def _page_calibrate(self):
-        self._title("3  Calibrate your silhouette")
+        self._title(f"{self.STEPS.index('calibrate')}  Calibrate your silhouette")
         self._para("For about 10 seconds, keep facing the camera and lean or step slowly to the side the "
                    "preview asks for. Doppleganger learns what your room looks like without you, so it can "
                    "outline you precisely.")
@@ -1122,6 +1201,9 @@ class Wizard:
         e = self.e
         page = self.STEPS[self.step]
         txt, col = "", CLOUD
+        if page == "permissions":
+            self._refresh_permissions()
+            return
         if page == "camera" and IS_MAC:
             st = self.main.obs
             if e.output.connected:
