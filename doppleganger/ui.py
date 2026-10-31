@@ -23,6 +23,51 @@ from .recorder import State
 IS_MAC = sys.platform == "darwin"
 FONT = "Segoe UI" if os.name == "nt" else ("Helvetica Neue" if IS_MAC else "Inter")
 WHEN_STARTS = "when you log in to your Mac" if IS_MAC else "when Windows starts"
+
+# ---------- text size ----------
+# Every font is a shared Tk font object, so changing the text size updates all open windows at once.
+# Sizes in this file are written for Windows; Tk on a Mac draws points much smaller, so there they're
+# scaled to the Mac's standard system text size (13 pt), then by the user's Text size setting.
+TEXT_SCALES = (0.85, 1.0, 1.15, 1.3, 1.5, 1.75)
+_fonts: dict = {}
+_text = {"platform": 1.0, "user": 1.0}
+
+
+def _platform_factor() -> float:
+    if not IS_MAC:
+        return 1.0
+    try:
+        from tkinter import font as tkfont
+        system = abs(int(tkfont.nametofont("TkDefaultFont").actual("size"))) or 13
+    except Exception:  # noqa: BLE001
+        system = 13
+    return max(1.0, system / 10)  # our body text is 10 here -> the Mac's system size there
+
+
+def F(size: int, weight: str = "normal"):
+    """Shared font at `size` (Windows points), following the platform and the Text size setting."""
+    from tkinter import font as tkfont
+    key = (size, weight)
+    f = _fonts.get(key)
+    if f is None:
+        f = tkfont.Font(family=FONT, size=_scaled(size), weight=weight)
+        _fonts[key] = f
+    return f
+
+
+def _scaled(size: int) -> int:
+    return max(7, round(size * _text["platform"] * _text["user"]))
+
+
+def px(n: int) -> int:
+    """A layout width (wrap length, fixed panel size) that grows with the Text size setting."""
+    return round(n * _text["user"])
+
+
+def set_text_scale(scale: float) -> None:
+    _text["user"] = scale
+    for (size, _w), f in _fonts.items():
+        f.configure(size=_scaled(size))
 MODE_BG = {"live": AQUA, "loop": VIOLET, "glitch": AMBER}
 MODE_FG = {"live": MIDNIGHT, "loop": CLOUD, "glitch": MIDNIGHT}
 
@@ -40,18 +85,20 @@ def _photo(path: str, width: int | None = None, bg: str = MIDNIGHT) -> ImageTk.P
 def apply_theme(root: tk.Misc) -> None:
     """Our own ttk theme in the brand palette (built on 'clam' so every colour is ours)."""
     root.configure(bg=MIDNIGHT)
+    _fonts.clear()  # fonts belong to one Tk root; a new root gets new ones
+    _text["platform"] = _platform_factor()
     s = ttk.Style(root)
     s.theme_use("clam")
-    base = (FONT, 10)
+    base = F(10)
     s.configure(".", background=MIDNIGHT, foreground=CLOUD, fieldbackground=SURFACE, bordercolor=BORDER,
                 lightcolor=SURFACE, darkcolor=SURFACE, troughcolor=SURFACE, focuscolor=VIOLET,
                 selectbackground=VIOLET, selectforeground=CLOUD, font=base, insertcolor=CLOUD)
     s.configure("TFrame", background=MIDNIGHT)
     s.configure("TLabel", background=MIDNIGHT, foreground=CLOUD)
-    s.configure("Small.TLabel", font=(FONT, 9), foreground=MUTED)
-    s.configure("Head.TLabel", font=(FONT, 11, "bold"))
-    s.configure("Title.TLabel", font=(FONT, 17, "bold"))
-    s.configure("Tag.TLabel", font=(FONT, 10), foreground=MUTED)
+    s.configure("Small.TLabel", font=F(9), foreground=MUTED)
+    s.configure("Head.TLabel", font=F(11, "bold"))
+    s.configure("Title.TLabel", font=F(17, "bold"))
+    s.configure("Tag.TLabel", font=F(10), foreground=MUTED)
     s.configure("TButton", background=SURFACE, foreground=CLOUD, bordercolor=BORDER, padding=(10, 6),
                 lightcolor=SURFACE, darkcolor=SURFACE, focuscolor=SURFACE)
     s.map("TButton", background=[("pressed", BORDER), ("active", SURFACE_HI), ("disabled", MIDNIGHT)],
@@ -81,7 +128,7 @@ def apply_theme(root: tk.Misc) -> None:
                 lightcolor=VIOLET, darkcolor=VIOLET)
     s.configure("TSeparator", background=BORDER)
     s.configure("TLabelframe", background=MIDNIGHT, bordercolor=BORDER, lightcolor=MIDNIGHT, darkcolor=MIDNIGHT)
-    s.configure("TLabelframe.Label", background=MIDNIGHT, foreground=MUTED, font=(FONT, 9, "bold"))
+    s.configure("TLabelframe.Label", background=MIDNIGHT, foreground=MUTED, font=F(9, "bold"))
     s.configure("Vertical.TScrollbar", background=SURFACE, troughcolor=MIDNIGHT, bordercolor=MIDNIGHT,
                 arrowcolor=MUTED, lightcolor=SURFACE, darkcolor=SURFACE)
 
@@ -92,7 +139,7 @@ class HoldButton(tk.Label):
 
     def __init__(self, master, engine, font_size=15, **kw):
         super().__init__(master, text="CUT", fg=CLOUD, bg=VIOLET, cursor="hand2",
-                         font=(FONT, font_size, "bold"), padx=10, pady=12, **kw)
+                         font=F(font_size, "bold"), padx=10, pady=12, **kw)
         self.e = engine
         self.bind("<ButtonPress-1>", lambda _e: self.e.request("cut_press"))
         self.bind("<ButtonRelease-1>", lambda _e: self.e.request("cut_release"))
@@ -132,6 +179,7 @@ class MainWindow:
         self._icon = ImageTk.PhotoImage(Image.open(brand.asset("icon.png")).resize((64, 64), Image.LANCZOS))
         self.root.iconphoto(True, self._icon)
         apply_theme(self.root)
+        set_text_scale(self.cfg.text_scale)
         self._photo = None
         self._last_preview_id = None
         self._lib_version = -1
@@ -173,11 +221,11 @@ class MainWindow:
         # --- status ---
         top = ttk.Frame(side)
         top.grid(sticky="ew")
-        self.state_lbl = tk.Label(top, text="LIVE", fg=MIDNIGHT, bg=AQUA, font=(FONT, 15, "bold"), width=7, pady=3)
+        self.state_lbl = tk.Label(top, text="LIVE", fg=MIDNIGHT, bg=AQUA, font=F(15, "bold"), width=7, pady=3)
         self.state_lbl.pack(side="left")
-        self.glitch_lbl = tk.Label(top, text="GLITCH", fg=MIDNIGHT, bg=AMBER, font=(FONT, 10, "bold"),
+        self.glitch_lbl = tk.Label(top, text="GLITCH", fg=MIDNIGHT, bg=AMBER, font=F(10, "bold"),
                                    padx=8, pady=6)
-        self.out_lbl = ttk.Label(side, text="", style="Small.TLabel", wraplength=300, justify="left")
+        self.out_lbl = ttk.Label(side, text="", style="Small.TLabel", wraplength=px(300), justify="left")
         self.out_lbl.grid(sticky="w", pady=(6, 0))
         # Mac only, while OBS or its camera is missing (beside the LIVE badge, so the panel doesn't grow)
         self.obs_btn = ttk.Button(top, text="Get OBS Studio (free)", style="Accent.TButton",
@@ -256,7 +304,7 @@ class MainWindow:
         ttk.Label(side, text=f"{brand.TAGLINE}   v{updater.current_version()}", style="Small.TLabel").grid(
             sticky="e", pady=(8, 0))
 
-        self.status = tk.Label(r, text="", anchor="w", padx=14, pady=5, bg=SURFACE, fg=CLOUD, font=(FONT, 9))
+        self.status = tk.Label(r, text="", anchor="w", padx=14, pady=5, bg=SURFACE, fg=CLOUD, font=F(9))
         self.status.grid(row=1, column=0, columnspan=2, sticky="ew")
 
     @staticmethod
@@ -269,6 +317,9 @@ class MainWindow:
 
     # ---------- keys (hold-capable Space) ----------
     def _bind_keys(self) -> None:
+        mod = "Command" if IS_MAC else "Control"
+        for seq, step in (("plus", 1), ("equal", 1), ("KP_Add", 1), ("minus", -1), ("KP_Subtract", -1), ("0", 0)):
+            self.root.bind_all(f"<{mod}-{seq}>", lambda _e, st=step: self.change_text_size(st))
         r = self.root
         # Space means CUT everywhere. Tk buttons/checkboxes normally also "press" themselves on
         # Space when focused (e.g. Record right after you clicked it) - switch that off.
@@ -484,6 +535,19 @@ class MainWindow:
         else:
             self.open_wizard(page="camera")
 
+    def change_text_size(self, step: int) -> None:
+        """step +1 / -1 = one size larger / smaller, 0 = back to normal."""
+        cur = min(TEXT_SCALES, key=lambda v: abs(v - self.cfg.text_scale))
+        i = TEXT_SCALES.index(cur)
+        new = 1.0 if step == 0 else TEXT_SCALES[max(0, min(len(TEXT_SCALES) - 1, i + step))]
+        if new != self.cfg.text_scale:
+            self.cfg.text_scale = new
+            self.cfg.save(self.e.config_path)
+            set_text_scale(new)
+        self.e.notify(f"Text size {int(round(new * 100))}%", 2)
+        if self.settings is not None and self.settings.alive:
+            self.settings.refresh()
+
     def _refresh_tips(self) -> None:
         """'How to record a good loop' before each recording (until turned off)."""
         want = self.e.tips_pending
@@ -602,19 +666,19 @@ class RecordTipsDialog:
         secs = int(round(main.cfg.loop_seconds))
         intro = (f"You'll record about {secs // 60}:{secs % 60:02d} of yourself. It plays on repeat, "
                  "so the goal is a calm, ordinary stretch of you paying attention.")
-        ttk.Label(f, text=intro, style="Small.TLabel", wraplength=440, justify="left").pack(anchor="w", pady=(2, 12))
+        ttk.Label(f, text=intro, style="Small.TLabel", wraplength=px(440), justify="left").pack(anchor="w", pady=(2, 12))
         hold = int(round(main.cfg.hold_still_seconds))
         for i, (head, body) in enumerate(RECORD_TIPS, 1):
             span = f"{hold} second" + ("" if hold == 1 else "s")
             head, body = head.replace("10 seconds", span), body.replace("10 seconds", span)
             row = ttk.Frame(f)
             row.pack(fill="x", pady=4)
-            tk.Label(row, text=str(i), width=2, bg=VIOLET, fg=CLOUD, font=(FONT, 10, "bold")).pack(
+            tk.Label(row, text=str(i), width=2, bg=VIOLET, fg=CLOUD, font=F(10, "bold")).pack(
                 side="left", anchor="n", padx=(0, 10), ipady=1)
             col = ttk.Frame(row)
             col.pack(side="left", fill="x")
             ttk.Label(col, text=head, style="Head.TLabel").pack(anchor="w")
-            ttk.Label(col, text=body, style="Small.TLabel", wraplength=410, justify="left").pack(anchor="w")
+            ttk.Label(col, text=body, style="Small.TLabel", wraplength=px(410), justify="left").pack(anchor="w")
         ttk.Label(f, text="Changed your mind mid-way? Press R or Esc to cancel; nothing is saved.",
                   style="Small.TLabel").pack(anchor="w", pady=(10, 12))
         bottom = ttk.Frame(f)
@@ -628,12 +692,12 @@ class RecordTipsDialog:
             self.win.bind(key, lambda _e: self.start())
         self.win.bind("<Escape>", lambda _e: self.dismiss())
         self.win.update_idletasks()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        ox, oy = parent.winfo_rootx(), parent.winfo_rooty()
         pw, ph = max(parent.winfo_width(), 1), max(parent.winfo_height(), 1)
         w, h = self.win.winfo_reqwidth(), self.win.winfo_reqheight()
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
-        x = min(max(0, px + (pw - w) // 2), max(0, sw - w))
-        y = min(max(0, py + (ph - h) // 4), max(0, sh - h - 40))
+        x = min(max(0, ox + (pw - w) // 2), max(0, sw - w))
+        y = min(max(0, oy + (ph - h) // 4), max(0, sh - h - 40))
         self.win.geometry(f"+{x}+{y}")
         try:
             self.win.grab_set()
@@ -681,15 +745,15 @@ class BusyDialog:
         f.pack()
         ttk.Label(f, text="Stitching your new loop...", style="Head.TLabel").pack(anchor="w")
         ttk.Label(f, text="Matching the end to the start so it repeats seamlessly. Cutting is paused "
-                          "for a moment.", style="Small.TLabel", wraplength=320, justify="left").pack(
+                          "for a moment.", style="Small.TLabel", wraplength=px(320), justify="left").pack(
             anchor="w", pady=(4, 12))
         self.bar = ttk.Progressbar(f, maximum=100, length=320, style="InSync.Horizontal.TProgressbar")
         self.bar.pack()
         self.win.update_idletasks()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        ox, oy = parent.winfo_rootx(), parent.winfo_rooty()
         pw, ph = max(parent.winfo_width(), 1), max(parent.winfo_height(), 1)
         w, h = self.win.winfo_reqwidth(), self.win.winfo_reqheight()
-        self.win.geometry(f"+{px + (pw - w) // 2}+{py + max(0, (ph - h) // 3)}")
+        self.win.geometry(f"+{ox + (pw - w) // 2}+{oy + max(0, (ph - h) // 3)}")
         try:
             self.win.grab_set()  # modal: clicks on the main window wait until the loop is ready
         except tk.TclError:
@@ -725,6 +789,17 @@ class SettingsWindow:
         f = ttk.Frame(self.win, padding=20)
         f.pack(fill="both")
         ttk.Label(f, text="Settings", style="Title.TLabel").grid(sticky="w", pady=(0, 10))
+
+        ttk.Label(f, text="Text size", style="Head.TLabel").grid(sticky="w", pady=(4, 2))
+        ts = ttk.Frame(f)
+        ts.grid(sticky="ew")
+        ttk.Button(ts, text="A−", width=4, command=lambda: main.change_text_size(-1)).pack(side="left")
+        self.text_pct = ttk.Label(ts, text="", width=6, anchor="center")
+        self.text_pct.pack(side="left", padx=6)
+        ttk.Button(ts, text="A+", width=4, command=lambda: main.change_text_size(1)).pack(side="left")
+        ttk.Button(ts, text="Reset", command=lambda: main.change_text_size(0)).pack(side="left", padx=(8, 0))
+        key = "Cmd" if IS_MAC else "Ctrl"
+        ttk.Label(ts, text=f"or {key} +  /  {key} −", style="Small.TLabel").pack(side="left", padx=(12, 0))
 
         ttk.Label(f, text="Privacy", style="Head.TLabel").grid(sticky="w", pady=(4, 2))
         self.v_mute = tk.BooleanVar(value=self.cfg.mute_mic_on_loop)
@@ -773,7 +848,7 @@ class SettingsWindow:
         cal.grid(sticky="ew")
         how = ("AI person detection - no setup needed. Calibrating the room is an optional fallback."
                if self.e.seg is not None else "Room calibration (AI detection isn't available on this PC).")
-        ttk.Label(cal, text=how, style="Small.TLabel", wraplength=330, justify="left").pack(side="left")
+        ttk.Label(cal, text=how, style="Small.TLabel", wraplength=px(330), justify="left").pack(side="left")
         ttk.Button(cal, text="Calibrate room", command=lambda: self.e.request("calibrate")).pack(side="right")
 
         ttk.Label(f, text="OBS Virtual Camera" if IS_MAC else "Doppleganger camera",
@@ -787,7 +862,7 @@ class SettingsWindow:
             self.startup_chk.state(["disabled"])
         cam = ttk.Frame(f)
         cam.grid(sticky="ew")
-        self.drv_lbl = ttk.Label(cam, text="", style="Small.TLabel", wraplength=330, justify="left")
+        self.drv_lbl = ttk.Label(cam, text="", style="Small.TLabel", wraplength=px(330), justify="left")
         self.drv_lbl.pack(side="left")
         if IS_MAC:  # the OBS Virtual Camera instead of our own driver
             self.drv_btn = ttk.Button(cam, text="Get OBS Studio", command=main.open_obs_help)
@@ -836,6 +911,7 @@ class SettingsWindow:
     def refresh(self) -> None:
         if not self.alive:
             return
+        self.text_pct.configure(text=f"{int(round(self.cfg.text_scale * 100))}%")
         self.v_guides.set(self.cfg.show_guides)
         self.v_outlines.set(self.cfg.show_outlines)
         if IS_MAC:
@@ -882,7 +958,7 @@ class MiniBar:
         self.thumb.grid(row=0, column=1)
         right = tk.Frame(f, bg=MIDNIGHT)
         right.grid(row=0, column=2, sticky="ns", padx=(10, 0))
-        self.state_lbl = tk.Label(right, text="LIVE", fg=MIDNIGHT, bg=AQUA, font=(FONT, 11, "bold"))
+        self.state_lbl = tk.Label(right, text="LIVE", fg=MIDNIGHT, bg=AQUA, font=F(11, "bold"))
         self.state_lbl.pack(fill="x")
         self.sync = ttk.Progressbar(right, maximum=100, length=150, style="Sync.Horizontal.TProgressbar")
         self.sync.pack(fill="x", pady=5)
@@ -966,12 +1042,12 @@ class Wizard:
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self.step = 0
         self._logo = _photo(brand.asset("logo_dark.png"), 330)
-        self.body = ttk.Frame(self.win, padding=24, width=480, height=480 if IS_MAC else 350)
+        self.body = ttk.Frame(self.win, padding=24, width=px(480), height=px(480 if IS_MAC else 350))
         self.body.pack(fill="both", expand=True)
         self.body.pack_propagate(False)
         nav = ttk.Frame(self.win, padding=(24, 0, 24, 18))
         nav.pack(fill="x")
-        self.dots = tk.Label(nav, bg=MIDNIGHT, fg=MUTED, font=(FONT, 10))
+        self.dots = tk.Label(nav, bg=MIDNIGHT, fg=MUTED, font=F(10))
         self.dots.pack(side="left")
         self.next_btn = ttk.Button(nav, text="Next", style="Accent.TButton", command=self.next)
         self.next_btn.pack(side="right")
@@ -1018,14 +1094,14 @@ class Wizard:
         ttk.Label(self.body, text=text, style="Title.TLabel").pack(anchor="w", pady=(0, 12))
 
     def _para(self, text):
-        ttk.Label(self.body, text=text, wraplength=430, justify="left").pack(anchor="w", pady=(0, 9))
+        ttk.Label(self.body, text=text, wraplength=px(430), justify="left").pack(anchor="w", pady=(0, 9))
 
     def _button(self, text, action):
         ttk.Button(self.body, text=text, style="Accent.TButton", command=lambda: self.e.request(action)).pack(
             anchor="w", pady=(4, 0))
 
     def _status(self):
-        self.status = ttk.Label(self.body, text="", wraplength=430, justify="left")
+        self.status = ttk.Label(self.body, text="", wraplength=px(430), justify="left")
         self.status.pack(anchor="w", pady=(12, 0))
 
     def render(self):
@@ -1065,7 +1141,7 @@ class Wizard:
                  "camera extension in System Settings.",
                  "Click \"Stop Virtual Camera\" and quit OBS. Then choose \"OBS Virtual Camera\" in Zoom.")
         for i, t in enumerate(steps, 1):
-            ttk.Label(self.body, text=f"{i}.  {t}", wraplength=430, justify="left", style="Small.TLabel").pack(
+            ttk.Label(self.body, text=f"{i}.  {t}", wraplength=px(430), justify="left", style="Small.TLabel").pack(
                 anchor="w", pady=(0, 4))
         row = ttk.Frame(self.body)
         row.pack(anchor="w", pady=(6, 0))
@@ -1080,7 +1156,7 @@ class Wizard:
         self._title(f"{self.STEPS.index('permissions')}  Allow Doppleganger on your Mac")
         ttk.Label(self.body, text="macOS asks before an app may use your camera or notice your hotkeys. "
                                   "Turn on Doppleganger in each list below - you only do this once.",
-                  wraplength=430, justify="left").pack(anchor="w", pady=(0, 10))
+                  wraplength=px(430), justify="left").pack(anchor="w", pady=(0, 10))
         self.perm_rows = {}
         for key, name, why, how, action in (
                 ("camera", "Camera", "Shows you in the preview and records your loop.",
@@ -1092,13 +1168,13 @@ class Wizard:
                  lambda: (macos.request_input_monitoring(), macos.open_input_monitoring_settings()))):
             row = ttk.Frame(self.body)
             row.pack(fill="x", pady=(0, 10))
-            state = tk.Label(row, text="…", width=2, bg=MIDNIGHT, fg=MUTED, font=(FONT, 14, "bold"))
+            state = tk.Label(row, text="…", width=2, bg=MIDNIGHT, fg=MUTED, font=F(14, "bold"))
             state.pack(side="left", anchor="n")
             col = ttk.Frame(row)
             col.pack(side="left", fill="x", expand=True, padx=(6, 8))
             ttk.Label(col, text=name, style="Head.TLabel").pack(anchor="w")
-            ttk.Label(col, text=why, style="Small.TLabel", wraplength=280, justify="left").pack(anchor="w")
-            hint = ttk.Label(col, text=how, style="Small.TLabel", wraplength=280, justify="left")
+            ttk.Label(col, text=why, style="Small.TLabel", wraplength=px(280), justify="left").pack(anchor="w")
+            hint = ttk.Label(col, text=how, style="Small.TLabel", wraplength=px(280), justify="left")
             hint.pack(anchor="w")
             btn = ttk.Button(row, text="Open Settings", command=action)
             btn.pack(side="right", anchor="n")
@@ -1107,7 +1183,7 @@ class Wizard:
                                      command=self._reopen)
         ttk.Label(self.body, text="After an update, macOS may ask again (Doppleganger isn't signed by Apple yet). "
                                   "If hotkeys stop working, switch Input Monitoring off and on for Doppleganger.",
-                  style="Small.TLabel", wraplength=430, justify="left").pack(anchor="w", side="bottom")
+                  style="Small.TLabel", wraplength=px(430), justify="left").pack(anchor="w", side="bottom")
         self._status()
         self._perm_checked = 0.0
         self.main.cfg.mac_permissions_seen = True

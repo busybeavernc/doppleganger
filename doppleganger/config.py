@@ -46,6 +46,7 @@ class Config:
 
     # Window
     mirror_preview: bool = True
+    text_scale: float = 1.0             # Text size: 0.85 (smaller) ... 1.75 (largest); Ctrl/Cmd + and -
     show_guides: bool = True
     show_outlines: bool = True          # Aqua (you) / Violet (loop) outlines in the preview
     show_record_tips: bool = True       # show "how to record a good loop" before each recording

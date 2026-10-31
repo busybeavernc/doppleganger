@@ -33,6 +33,9 @@ Your loops and settings live in `%APPDATA%\Doppleganger` and are kept if you uni
 
 On a Mac, the microphone is silenced by setting the input volume to 0 while the LOOP is on air, then setting it back. Loops and settings live in `~/Library/Application Support/Doppleganger`. Updates install themselves the same way as on Windows, as long as Doppleganger runs from *Applications* and not from the disk image. Hiding from screen sharing uses macOS's "don't share this window" setting; some recent screen-capture methods may still show the window.
 
+### Text size
+On a Mac, text follows the system's standard size. *Settings → Text size* (or **Ctrl/Cmd +** and **Ctrl/Cmd −**, with **Ctrl/Cmd 0** to reset) makes it smaller or larger in every window, from 85% to 175%.
+
 ### Starting up
 Loading the AI model and opening the webcam takes a few seconds, so a splash screen with the logo shows what's happening until the window opens.
 
