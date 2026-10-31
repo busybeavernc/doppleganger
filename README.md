@@ -17,7 +17,7 @@ Your loops and settings live in `%APPDATA%\Doppleganger` and are kept if you uni
 
 ### Mac
 1. Download the Mac disk image from the [latest release](https://github.com/busybeavernc/doppleganger/releases/latest): **Doppleganger-mac-arm64.dmg** for Apple Silicon (M1 or newer) or **Doppleganger-mac-x86_64.dmg** for Intel Macs. Open it and drag **Doppleganger** onto **Applications**.
-2. The first time, **right-click Doppleganger → Open** (the app isn't notarized by Apple yet). On macOS 15 or later, if there's no Open option, go to *System Settings → Privacy & Security* and click **Open Anyway**.
+2. The first time, macOS says Doppleganger *"can't be opened because Apple cannot check it for malicious software"*, because the app isn't notarized by Apple yet. Click **OK**, go to *System Settings → Privacy & Security*, scroll down and click **Open Anyway**, then open it again and choose **Open**. On macOS 14 or older, **right-click → Open** also works. A Terminal fallback: `xattr -dr com.apple.quarantine /Applications/Doppleganger.app`.
 3. Allow the **camera** when macOS asks.
 4. **OBS Studio is needed on a Mac.** Doppleganger sends your picture through the free OBS Virtual Camera, because a Mac camera driver of our own needs a paid Apple developer certificate. The setup guide checks whether OBS and its camera are installed. If they aren't, it has a **Download OBS Studio** button ([obsproject.com/download](https://obsproject.com/download)) and walks you through the one-time steps:
    1. Install OBS Studio 30 or newer.
